@@ -1,0 +1,15 @@
+USE AT YOUR OWN RISK
+====================
+
+This is still very raw, I am still making major design decisions and even then I still have to make the code pretty.
+
+I realise that it is not compilable on Windows right now,
+I don't know how to create an "MSVC Project" and build for Windows properly.
+
+I am working toward that but Windows is of low priority while I work on the friendly/ and glue/ stuff.
+
+MinGW is not an option.
+
+PS:
+	About the license... I choose for all this to be under the BSD 3-Clause
+	In addition to the limitations of that license, I disallow anyone from patenting derivative works.  (I hope I can legally do this)
