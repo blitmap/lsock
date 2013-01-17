@@ -82,58 +82,51 @@ union LSockAddr
 	struct sockaddr_un      un; 
 };
 
-/* TODO:
+/*
+** DONE:
+**			- htons()
+**			- htonl()
+**			- ntohs()
+**			- ntohl()
+**			- socket()
+**			- strerror()
+**			- gai_strerror()
 **
-** Bindings:
+** ALMOST:  (the bindings are there, they need friendly/ wrapping)
+**		
+**			- bind()
+**			- listen()
+**			- connect()
+**			- send()/sendto()   -- (sendijto())
+**			- recv()/recvfrom() -- (recvfrom())
+**			- shutdown()
 **
-** IO:
-**	- lsock_select()
+**			- sockaddr()
 **
-**	Only available on Linux:
-**		- lsock_socketpair()
+** TODO:
+**			- select()
 **
-** Handshaking:
-**	- lsock_connect()
-**	- lsock_bind()
+**			- getaddrinfo()
+**			- getnameinfo() -- low priority?
+**			- ioctl()
+**			- getsockopt()
+**			- setsockopt()
+**			- getsockname() -- can be done in Lua
 **
-** Option Controls:
-**	- lsock_ioctl(userdata file_handle, number request, userdata...)
-**	- lsock_getsockopt(userdata sock, number level, number option, userdata option_value)
-**	- lsock_setsockopt(userdata sock, number level, number option, userdata option_value)
+**			- getsockname()
+**			- getpeername()
 **
-** Host to Network/Network to Host:
-**	- lsock_inet_ntop(number af, userdata) -> string   (InetNtop() on Windows)
-**	- lsock_inet_pton() -> userdata (InetPton() on Windows)
-**	- lsock_htonl(number)   -> userdata
-**	- lsock_htons(number)   -> userdata
-**	- lsock_ntohl(userdata) -> number
-**	- lsock_ntohs(userdata) -> number
+**			- socketpair() -- only on Linux
+**			- htond()      -- only on Windows
+**			- htonf()      -- only on Windows
+**			- htonll()     -- only on Windows
+**			- ntohd()      -- only on Windows
+**			- ntohf()      -- only on Windows
+**			- ntohll()     -- only on Windows
 **
-**	Only available on Windows (WAT?!):
-**		- htond(number)    -> userdata
-**		- htonf(number)    -> userdata
-**		- htonll(number)   -> userdata
-**		- ntohd(userdata)  -> number
-**		- ntohf(userdata)  -> number
-**		- ntohll(userdata) -> number
-**
-** Socket Info:
-**	- lsock_getsockname()
-**	- lsock_getpeername()
-**	- lsock_gethostname()
-**
-**	- lsock_getaddrinfo()
-**	- lsock_getnameinfo()
-**
-**	Maybe...
-**		- lsock_getprotobyname()
-**		- lsock_getprotobynumber()
-**
-** Data structure creation:
-**	- lsock_struct_addrinfo_un()
-**	- lsock_struct_addrinfo_in()
-**	- lsock_struct_linger()
-**	- lsock_struct_timeval()
+**			- linger()   -- for get/setsockopt()
+**			- timeval()  -- for get/setsockopt()
+**			- addrinfo() -- for getaddrinfo()
 */
 
 /* going to and from SOCKET and fd in Windows: _open_osfhandle()/_get_osfhandle() */
@@ -279,6 +272,103 @@ lsock__netnumber_tostring(lua_State * const L)
 
 /* }}} */
 
+/* {{{ lsock_htons() */
+
+static int
+lsock_htons(lua_State * const L)
+{
+	lua_Number n = luaL_checknumber(L, 1);
+	uint16_t   s = n;
+
+	if (s != n) /* type promotion back to lua_Number */
+	{
+		lua_pushnil(L);
+		lua_pushfstring(L, "number cannot be represented as [network] short (%s)", s > n ? "underflow" : "overflow");
+		return 2;
+	}
+
+	s = htons(s);
+
+	lua_pushlstring(L, (const char *) &s, sizeof(uint16_t));
+
+	return 1;
+}
+
+/* }}} */
+
+/* {{{ lsock_ntohs() */
+
+static int
+lsock_ntohs(lua_State * const L)
+{
+	uint16_t     h = 0;
+	size_t       l = 0;
+	const char * s = luaL_checklstring(L, 1, &l);
+
+	if (sizeof(uint16_t) != l) /* obviously 2 bytes... */
+	{
+		lua_pushnil(L);
+		lua_pushstring(L, "string length must be sizeof(uint16_t) (2 bytes)");
+		return 2;
+	}
+
+	h = ntohs(*((uint16_t *) s));
+
+	lua_pushnumber(L, h);
+
+	return 1;
+}
+
+/* }}} */
+
+/* {{{ lsock_htonl() */
+
+static int
+lsock_htonl(lua_State * const L)
+{
+	lua_Number n = luaL_checknumber(L, 1);
+	uint32_t   l = n;
+
+	if (l != n) /* type promotion back to lua_Number */
+	{
+		lua_pushnil(L);
+		lua_pushfstring(L, "number cannot be represented as [network] long (%s)", l > n ? "underflow" : "overflow");
+		return 2;
+	}
+
+	l = htonl(l);
+
+	lua_pushlstring(L, (const char *) &l, sizeof(uint32_t));
+
+	return 1;
+}
+
+/* }}} */
+
+/* {{{ lsock_ntohl() */
+
+static int
+lsock_ntohl(lua_State * const L)
+{
+	uint32_t     h = 0;
+	size_t       l = 0;
+	const char * s = luaL_checklstring(L, 1, &l);
+
+	if (sizeof(uint32_t) != l) /* obviously 2 bytes... */
+	{
+		lua_pushnil(L);
+		lua_pushstring(L, "string length must be sizeof(uint32_t) (4 bytes)");
+		return 2;
+	}
+
+	h = ntohl(*((uint32_t *) s));
+
+	lua_pushnumber(L, h);
+
+	return 1;
+}
+
+/* }}} */
 
 /* {{{ lsock_sockaddr() -> lsock_sockaddr userdata */
 
@@ -759,6 +849,10 @@ static const luaL_Reg lsocklib[] =
 	LUA_REG(sockaddr),
 	LUA_REG(socket),
 	LUA_REG(strerror),
+	LUA_REG(htons),
+	LUA_REG(ntohs),
+	LUA_REG(htonl),
+	LUA_REG(ntohl),
 	LUA_REG(_netnumber_tostring),
 	LUA_REG(_sockaddr_getset),
 	{ NULL, NULL }
