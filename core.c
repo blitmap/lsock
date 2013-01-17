@@ -288,9 +288,7 @@ lsock_sockaddr(lua_State * const L)
 	/* I could be smart about this and allocate only as per address-family usage,
 	** but if all of these sockaddr structures are the same size I can freely
 	** convert between them depending on member assignment from Lua */
-	NEWUDATA(L, sizeof(union LSockAddr));
-
-	luaL_setmetatable(L, LSOCK_SOCKADDR);
+	(void) newsockaddr(L);
 
 	return 1;
 }
