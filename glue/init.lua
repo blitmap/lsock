@@ -1,7 +1,5 @@
-require('lsock.glue.socket')
-require('lsock.glue.sockaddr')
--- eventually: require('lsock.glue.getaddrinfo')
--- eventually: require('lsock.glue.linger_t')
--- eventually: require('lsock.glue.timeval_t')
+for _, v in ipairs({ 'socket', 'sockaddr', 'linger', 'timeval' }) do
+	assert(require('lsock.glue.' .. v))
+end
 
 return true

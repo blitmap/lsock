@@ -4,9 +4,9 @@ local cyield = coroutine.yield
 
 local mt = {}
 
-mt.__index    = core._sockaddr_getset
-mt.__newindex = core._sockaddr_getset
+mt.__index    = core._linger_getset
+mt.__newindex = core._linger_getset
 
-debug.getregistry()['lsock.sockaddr'] = mt
+debug.getregistry()['lsock.linger'] = mt
 
 return true

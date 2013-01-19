@@ -1,6 +1,7 @@
 local core = require('lsock.core')
 
-assert(require('lsock.friendly'))
-assert(require('lsock.glue'    ))
+for _, v in ipairs({ 'glue', 'friendly' }) do
+	assert(require('lsock.' .. v))
+end
 
 return core
