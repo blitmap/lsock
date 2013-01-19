@@ -55,7 +55,8 @@ typedef luaL_Stream LStream;
 typedef struct
 {
 	LStream lstream;
-	lsocket s;
+	lsocket sock;
+	int     fd;
 }
 LSockStream; /* this should match LStream in Lua's source with the addition of the member 'sd' */
 
@@ -69,7 +70,8 @@ LSockStream; /* this should match LStream in Lua's source with the addition of t
 #define  LSOCK_CHECKTIMEVAL(L, index) ((struct timeval  *) luaL_checkudata(L, index, LSOCK_TIMEVAL ))
 #define   LSOCK_CHECKLINGER(L, index) ((struct linger   *) luaL_checkudata(L, index, LSOCK_LINGER  ))
 
-#define   LSOCK_CHECKSOCKET(L, index) (((LSockStream *) (LSOCK_CHECKHANDLE(L, 1)))->s)
+#define   LSOCK_CHECKSOCKET(L, index) (((LSockStream *) (LSOCK_CHECKHANDLE(L, 1)))->sock)
+#define       LSOCK_CHECKFD(L, index) (((LSockStream *) (LSOCK_CHECKHANDLE(L, 1)))->fd)
 
 #define LSOCK_STRERROR(L, fname) lsock_error(L, errno,     &strerror, fname)
 #define LSOCK_GAIERROR(L)        lsock_error(L, errno, &gai_strerror, NULL )
@@ -187,9 +189,9 @@ newsockstream(lua_State * const L)
 	p->lstream.closef = &lsock_io_fclose;
 
 #ifdef _WIN32
-	p->s             = INVALID_SOCKET;
+	p->sock          = INVALID_SOCKET;
 #else
-	p->s             = -1; /* invalid fd on Linux */
+	p->sock          = -1; /* invalid fd on Linux */
 #endif
 	
 	return p;
@@ -211,25 +213,6 @@ newlsockudata(lua_State * const L, const size_t sz, const char * const registry_
 
 /* }}} */
 
-/* {{{ lsocket_to_fd() */
-
-#ifdef _WIN32
-
-static int
-lsocket_to_fd(const lsocket handle)
-{
-	const int fd = _open_osfhandle(handle, 0); /* no _O_APPEND, _O_RDONLY, _O_TEXT */
-
-	if (-1 == fd)
-		luaL_error(L, "_open_osfhandle(): %s", strerror(errno));
-
-	return fd;
-}
-
-#endif
-
-/* }}} */
-
 /* {{{ fdopen_lsocket() */
 
 /* meant to take the raw lsocket type and an LSockStream and fill out the fields as it converts it into an fd (for Windows mostly) */
@@ -237,18 +220,26 @@ static int
 fdopen_lsocket(lua_State * const L, const lsocket sock, LSockStream * stream)
 {
 	FILE * sockfile = NULL;
+	int    fd       = -1;
 
 	if (INVALID_LSOCKET(sock))
 		return LSOCK_STRERROR(L, NULL);
 
-	stream->s = sock;
+	stream->sock = sock;
 
 	/* socket() gives us a SOCKET, not an fd, on Windows */
 #ifdef _WIN32
-	sockfile = fdopen(lsocket_to_fd(sock), LSOCK_FDOPEN_MODE);
+	fd = _open_osfhandle(handle, 0); /* no _O_APPEND, _O_RDONLY, _O_TEXT */
+
+	if (-1 == fd)
+		return LSOCK_STRERROR(L, "_open_osfhandle()");
 #else
-	sockfile = fdopen(sock, LSOCK_FDOPEN_MODE);
+	fd = sock; /* hah. */
 #endif
+
+	stream->fd = fd;
+
+	sockfile = fdopen(fd, LSOCK_FDOPEN_MODE);
 
 	if (NULL == sockfile)
 #ifdef _WIN32 /* maybe this is overdoing it. */
@@ -260,24 +251,6 @@ fdopen_lsocket(lua_State * const L, const lsocket sock, LSockStream * stream)
 	stream->lstream.f = sockfile;
 
 	return 0;
-}
-
-/* }}} */
-
-/* {{{ lsock__number_to_rawstring */
-
-static int
-lsock__netnumber_tostring(lua_State * const L)
-{
-	const char * s = lua_tostring(L, 1);
-
-	/* requirement that lua_Number be at least long int */
-	lua_Number * n = luaL_checkudata(L, 1, s);
-
-	lua_pushnumber(L, *n);
-	lua_tostring(L, -1); /* changes the number we pushed to a string in-place */
-
-	return 1;
 }
 
 /* }}} */
@@ -819,7 +792,7 @@ lsock_sendijto(lua_State * const L)
 
 	if (!lua_isnone(L, 6))
 	{
-		to       = luaL_checkudata(L, 6, LSOCK_SOCKADDR);
+		to       = LSOCK_CHECKSOCKADDR(L, 6);
 		dest_len = lua_rawlen(L, 6); /* important */
 	}
 
@@ -924,6 +897,20 @@ lsock_cleanup(lua_State * const L)
 
 /* }}} */
 
+/* {{{ lsock_getfd() */
+
+/* for working with (some) luasocket stuff */
+
+static int
+lsock_getfd(lua_State * const L)
+{
+	lua_pushnumber(L, LSOCK_CHECKFD(L, 1));
+
+	return 1;
+}
+
+/* }}} */
+
 /* {{{ luaopen_lsock_core() */
 
 #define LUA_REG(x) { #x, lsock_##x }
@@ -935,6 +922,7 @@ static const luaL_Reg lsocklib[] =
 	LUA_REG(bind),
 	LUA_REG(connect),
 	LUA_REG(gai_strerror),
+	LUA_REG(getfd),
 	LUA_REG(linger),
 	LUA_REG(listen),
 	LUA_REG(recv),
@@ -948,7 +936,6 @@ static const luaL_Reg lsocklib[] =
 	LUA_REG(ntohs),
 	LUA_REG(htonl),
 	LUA_REG(ntohl),
-	LUA_REG(_netnumber_tostring),
 	LUA_REG(_sockaddr_getset),
 	LUA_REG(_timeval_getset),
 	LUA_REG(_linger_getset),
