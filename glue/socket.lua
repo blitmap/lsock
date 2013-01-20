@@ -3,7 +3,7 @@ local core     = require(basename .. '.core')
 
 -- this is more future-proof since we don't
 -- rely on the key name in the registry
-local fh_mt = debug.getmetatable(io.stdout)
+local fh_mt = getmetatable(io.stdout)
 
 fh_mt.__index =
 	function (s, k)
