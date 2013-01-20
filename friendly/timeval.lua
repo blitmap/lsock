@@ -1,7 +1,8 @@
-local core    = require('lsock.core')
-local timeval = core.timeval
-local fields  = { 'tv_sec', 'tv_usec' }
-local mt      = debug.getregistry()['lsock.timeval']
+local basename = (...):match('^[^.]*')
+local core     = require(basename .. '.core')
+local timeval  = core.timeval
+local fields   = { 'tv_sec', 'tv_usec' }
+local mt       = debug.getregistry()[basename .. '.timeval']
 
 mt.__pairs =
 	function (s)
@@ -33,7 +34,7 @@ mt.__ipairs =
 			)
 	end
 
--- lsock.timeval({ tv_sec = 3, tv_usec = 283 }) -> timeval userdata
+-- timeval({ tv_sec = 3, tv_usec = 283 }) -> timeval userdata
 core.timeval =
 	function (t)
 		local l = timeval()

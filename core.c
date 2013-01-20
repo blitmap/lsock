@@ -38,6 +38,7 @@
 
 #define LSOCK_FDOPEN_MODE "r+b"
 
+/* these are formed by combining the library name + '.' + data structure name (without 'struct') */
 #define LSOCK_SOCKET   "lsock.socket"
 #define LSOCK_SOCKADDR "lsock.sockaddr"
 #define LSOCK_LINGER   "lsock.linger"

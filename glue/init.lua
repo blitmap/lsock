@@ -1,5 +1,5 @@
 for _, v in ipairs({ 'socket', 'sockaddr', 'linger', 'timeval' }) do
-	require('lsock.glue.' .. v)
+	require(... .. '.' .. v)
 end
 
 return true

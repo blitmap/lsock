@@ -1,4 +1,5 @@
-local core     = require('lsock.core')
+local basename = (...):match('^[^.]*')
+local core     = require(basename .. '.core')
 local cwrap    = coroutine.wrap
 local cyield   = coroutine.yield
 local sockaddr = core.sockaddr
@@ -32,7 +33,7 @@ local fields =
 			}
 		}
 
-local mt = debug.getregistry()['lsock.sockaddr']
+local mt = debug.getregistry()[basename .. '.sockaddr']
 
 mt.__pairs =
 	function (s)
@@ -85,7 +86,7 @@ core.sockaddr =
 		return addr
 	end
 
--- tmp = lsock.sockaddr 'INADDR_ANY_INIT'
+-- sockaddr 'INADDR_ANY_INIT' -> sockaddr userdata
 core.INADDR_ANY_INIT       = { sin_family  = 'AF_INET',  sin_addr  = core.INADDR_ANY       }
 core.INADDR_LOOPBACK_INIT  = { sin_family  = 'AF_INET',  sin_addr  = core.INADDR_LOOPBACK  }
 core.IN6ADDR_ANY_INIT      = { sin6_family = 'AF_INET6', sin6_addr = core.in6addr_any      }

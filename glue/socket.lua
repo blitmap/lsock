@@ -1,4 +1,5 @@
-local core = require('lsock.core')
+local basename = (...):match('^[^.]*')
+local core     = require(basename .. '.core')
 
 -- this is more future-proof since we don't
 -- rely on the key name in the registry
@@ -10,6 +11,6 @@ fh_mt.__index =
 	end
 
 -- every time a socket is created, the lua file handle mt becomes the socket's mt */
-debug.getregistry()['lsock.socket'] = fh_mt
+debug.getregistry()[basename .. '.socket'] = fh_mt
 
 return true

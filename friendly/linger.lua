@@ -1,7 +1,10 @@
-local core   = require('lsock.core')
-local linger = core.linger
-local fields = { 'l_onoff', 'l_linger' }
-local mt     = debug.getregistry()['lsock.linger']
+local basename = (...):match('^[^.]*')
+local core     = require(basename .. '.core')
+local linger   = core.linger
+local cwrap    = coroutine.wrap
+local cyield   = coroutine.yield
+local fields   = { 'l_onoff', 'l_linger' }
+local mt       = debug.getregistry()[basename .. '.linger']
 
 mt.__pairs =
 	function (s)
@@ -33,7 +36,7 @@ mt.__ipairs =
 			)
 	end
 
--- lsock.linger({ l_onoff = 1, l_linger = 20 }) -> linger userdata
+-- linger({ l_onoff = 1, l_linger = 20 }) -> linger userdata
 core.linger =
 	function (t)
 		local l = linger()
