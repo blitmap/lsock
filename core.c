@@ -27,6 +27,9 @@
 #	include <errno.h>
 #	include <sys/time.h>
 #	include <sys/sendfile.h>
+#	include <fcntl.h>
+#	include <stropts.h>
+#	include <sys/ioctl.h>
 #endif
 
 #include <lauxlib.h>
@@ -62,14 +65,16 @@ typedef int    lsocket;
 #define LSOCK_CHECKSOCKET(L, index) stream_to_lsocket(L, LSOCK_CHECKSTREAM(L, index)->f)
 #define     LSOCK_CHECKFD(L, index) stream_to_fd(L, LSOCK_CHECKSTREAM(L, index)->f)
 
-#define LSOCK_STRERROR(L, fname) lsock_error(L, errno,     &strerror, fname)
-#define LSOCK_GAIERROR(L)        lsock_error(L, errno, &gai_strerror, NULL )
-#define LSOCK_STRFATAL(L, fname) lsock_fatal(L, errno,     &strerror, fname)
+#define LSOCK_STRERROR(L, fname) lsock_error(L, LSOCK_ERRNO,     &strerror, fname)
+#define LSOCK_GAIERROR(L)        lsock_error(L, LSOCK_ERRNO, &gai_strerror, NULL )
+#define LSOCK_STRFATAL(L, fname) lsock_fatal(L, LSOCK_ERRNO,     &strerror, fname)
 
 #ifdef _WIN32
 #	define INVALID_SOCKET(s) (INVALID_SOCKET == s)
+#	define LSOCK_ERRNO       WSAGetLastError()
 #else
 #	define INVALID_SOCKET(s) (s < 0)
+#	define LSOCK_ERRNO       errno
 #endif
 
 /* including sockaddr_un in this only increases the byte count by 18 */
@@ -90,8 +95,9 @@ typedef union
 **			- ntohl()
 **
 **			- socket()
-**			- connect()
 **			- bind()
+**			- blocking() -- for setting nonblocking mode
+**			- connect()
 **			- listen()
 **			- shutdown()
 **
@@ -186,9 +192,9 @@ stream_to_fd(lua_State * const L, FILE * const stream)
 
 	if (-1 == fd)
 #ifdef _WIN32
-		luaL_error(L, "_fileno(): %s", strerror(errno));
+		LSOCK_STRFATAL(L, "_fileno()");
 #else
-		luaL_error(L, "fileno(): %s", strerror(errno));
+		LSOCK_STRFATAL(L, "fileno()");
 #endif
 
 	return fd;
@@ -256,7 +262,7 @@ fd_to_lsocket(lua_State * const L, const int fd)
 	lsocket l = _get_osfhandle(fd);
 
 	if (INVALID_HANDLE_VALUE == l)
-		return luaL_error("_get_osfhandle(): %s", strerror(errno));
+		return LSOCK_STRFATAL(L, "_get_osfhandle()")
 
 	return l;
 #else
@@ -666,14 +672,22 @@ lsock__sockaddr_getset(lua_State * const L)
 				/* NUL this just to be sure */
 				BZERO(dst, sz);
 
+#ifdef _WIN32
+				stat = InetPton(af, src, dst);
+#else
 				stat = inet_pton(af, src, dst);
+#endif
 
 				if (1 != stat) /* success is 1, funnily enough */
 				{
 					if (0 == stat)
 						luaL_error(L, "invalid address for address family (AF_INET%s): %s", o == SIN_ADDR ? "" : "6", src);
 					else
-						luaL_error(L, strerror(errno));
+#ifdef _WIN32
+						return LSOCK_STRFATAL(L, "InetPton()");
+#else
+						return LSOCK_STRFATAL(L, "inet_pton()");
+#endif
 				}
 			}
 			else
@@ -683,13 +697,18 @@ lsock__sockaddr_getset(lua_State * const L)
 
 				void * src = NULL;
 
+				BZERO(dst, sizeof(dst));
+
 				if (AF_INET == af) src = &p->in.sin_addr;
 				else               src = &p->in6.sin6_addr;
 
-				BZERO(dst, sizeof(dst));
-
+#ifdef _WIN32
+				if (NULL == InetNtop(af, src, dst, sizeof(dst)))
+					return LSOCK_STRFATAL(L, "InetNtop()");
+#else
 				if (NULL == inet_ntop(af, src, dst, sizeof(dst)))
-					luaL_error(L, strerror(errno));
+					return LSOCK_STRFATAL(L, "inet_ntop()");
+#endif
 
 				lua_pushstring(L, dst);
 			}
@@ -707,7 +726,7 @@ lsock__sockaddr_getset(lua_State * const L)
 
 					size_t l = 0;
 					const char * s = luaL_checklstring(L, 3, &l);
-					void * dst = p->addr.sa_data;
+					void * dst = o == SUN_PATH ? p->un.sun_path : p->addr.sa_data;
 
 					/* .sun_path gets an address family check, .sa_data does not */
 					if (o == SUN_PATH)
@@ -720,8 +739,11 @@ lsock__sockaddr_getset(lua_State * const L)
 
 						if (s[l] != NUL)
 							luaL_error(L, "field \"sun_path\" must be NUL-terminated");
-
-						dst = &p->un.sun_path;
+					}
+					else
+					{
+						if (l > 14)
+							luaL_error(L, "string too long for .sa_data (greater than 14 bytes)");
 					}
 
 					BZERO(dst, sz); /* clear this first */
@@ -967,6 +989,42 @@ lsock_socket(lua_State * const L)
 
 /* }}} */
 
+/* {{{ lsock_blocking() */
+
+static int
+lsock_blocking(lua_State * const L)
+{
+	lsocket s = LSOCK_CHECKSOCKET(L, 1);
+	int block =    !lua_toboolean(L, 2); /* sock:blocking() would set blocking, sock:blocking(false) would unblock, etc.. */
+
+#ifndef _WIN32
+	int flags = fcntl(s, F_GETFL);
+
+	if (-1 == flags)
+		return LSOCK_STRERROR(L, "fcntl(F_GETFL)");
+
+	flags |= block ? O_NONBLOCK : 0;
+
+	flags = fcntl(s, F_SETFL, flags);
+
+	if (-1 == flags)
+		return LSOCK_STRERROR(L, "fcntl(F_SETFL)");
+
+	flags = block ? 1 : 0;
+
+	flags = ioctl(s, FIONBIO, &flags);
+#else
+	if (SOCKET_ERROR == ioctlsocket(s, FIONBIO, block))
+		return LSOCK_ERROR(L, "ioctlsocket()");
+#endif
+
+	lua_pushboolean(L, block);
+	
+	return 1;
+}
+
+/* }}} */
+
 #ifndef _WIN32
 
 /* {{{ socketpair() */
@@ -1067,6 +1125,7 @@ static const luaL_Reg lsocklib[] =
 	/* alphabetical */
 	LUA_REG(accept),
 	LUA_REG(bind),
+	LUA_REG(blocking),
 	LUA_REG(connect),
 	LUA_REG(gai_strerror),
 	LUA_REG(getfd),
