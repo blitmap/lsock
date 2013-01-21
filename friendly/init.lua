@@ -67,13 +67,12 @@ for _, v in pairs({ 'linger', 'timeval' }) do
 end
 
 -- anything that needs more complex friendly setup gets loaded here
-for _, v in pairs({ 'socket', 'sockaddr', 'listen', 'shutdown' }) do
+for _, v in pairs({ 'sockaddr', 'socket', 'listen', 'shutdown' }) do
 	require(... .. '.' .. v)
 end
 
 -- if it's there...
-if core.sendfile then
-	require(... .. '.sendfile')
-end
+if core.sendfile   then require(... .. '.sendfile')   end
+if core.socketpair then require(... .. '.socketpair') end
 
 return true

@@ -50,11 +50,11 @@ typedef int    lsocket;
 #endif
 
 #define  LSOCK_NEWLSOCKET(L) ((      lsocket   *) lsock_newudata(L, sizeof(lsocket),         LSOCK_SOCKET  ))
-#define LSOCK_NEWSOCKADDR(L) ((union LSockAddr *) lsock_newudata(L, sizeof(union LSockAddr), LSOCK_SOCKADDR))
+#define LSOCK_NEWSOCKADDR(L) ((LSockAddr *) lsock_newudata(L, sizeof(LSockAddr), LSOCK_SOCKADDR))
 #define   LSOCK_NEWLINGER(L) ((struct linger   *) lsock_newudata(L, sizeof(struct linger),   LSOCK_LINGER  ))
 #define  LSOCK_NEWTIMEVAL(L) ((struct timeval  *) lsock_newudata(L, sizeof(struct timeval),  LSOCK_TIMEVAL ))
 
-#define LSOCK_CHECKSOCKADDR(L, index) ((union LSockAddr *) luaL_checkudata(L, index, LSOCK_SOCKADDR))
+#define LSOCK_CHECKSOCKADDR(L, index) ((LSockAddr *) luaL_checkudata(L, index, LSOCK_SOCKADDR))
 #define  LSOCK_CHECKTIMEVAL(L, index) ((struct timeval  *) luaL_checkudata(L, index, LSOCK_TIMEVAL ))
 #define   LSOCK_CHECKLINGER(L, index) ((struct linger   *) luaL_checkudata(L, index, LSOCK_LINGER  ))
 
@@ -73,14 +73,14 @@ typedef int    lsocket;
 #endif
 
 /* including sockaddr_un in this only increases the byte count by 18 */
-union LSockAddr
+typedef union
 {
 	struct sockaddr_storage storage;
 	struct sockaddr         addr;
 	struct sockaddr_in      in;
 	struct sockaddr_in6     in6;
 	struct sockaddr_un      un;
-};
+} LSockAddr;
 
 /*
 ** DONE:
@@ -102,7 +102,8 @@ union LSockAddr
 **			- linger()   -- for get/setsockopt()
 **			- timeval()  -- for get/setsockopt()
 **
-**			- sendfile() -- only on Linux
+**			- sendfile()   -- only on Linux
+**			- socketpair() -- only on Linux
 **
 ** ALMOST:  (the bindings are there, they need friendly/ wrapping)
 **		
@@ -122,7 +123,6 @@ union LSockAddr
 **			- getsockname()
 **			- getpeername()
 **
-**			- socketpair() -- only on Linux
 **			- htond()      -- only on Windows
 **			- htonf()      -- only on Windows
 **			- htonll()     -- only on Windows
@@ -600,7 +600,7 @@ enum SOCKADDR_OPTS
 static int
 lsock__sockaddr_getset(lua_State * const L)
 {
-	union LSockAddr * const p = LSOCK_CHECKSOCKADDR(L, 1);
+	LSockAddr * const p = LSOCK_CHECKSOCKADDR(L, 1);
 	int                     o = luaL_checkoption(L, 2, NULL, sockaddr_fields);
 	int              newindex = !lua_isnone(L, 3);
 	const int              af = p->storage.ss_family; /* we should be working from this!, not `o' */
@@ -773,7 +773,7 @@ lsock_accept(lua_State * const L)
 {
 	socklen_t         sz      = 0;
 	lsocket           serv    = LSOCK_CHECKSOCKET(L, 1);
-	union LSockAddr * info    = NULL;
+	LSockAddr * info    = NULL;
 	luaL_Stream     * newfh   = NULL;
 
 	lsocket           newsock = accept(serv, (struct sockaddr *) info, &sz);
@@ -818,7 +818,7 @@ static int
 lsock_bind(lua_State * const L)
 {
 	lsocket                 serv =   LSOCK_CHECKSOCKET(L, 1);
-	union LSockAddr * const addr = LSOCK_CHECKSOCKADDR(L, 2);
+	LSockAddr * const addr = LSOCK_CHECKSOCKADDR(L, 2);
 
 	if (bind(serv, (const struct sockaddr *) addr, lua_rawlen(L, 2)))
 		return LSOCK_STRERROR(L, NULL);
@@ -838,7 +838,7 @@ static int
 lsock_connect(lua_State * const L)
 {
 	lsocket                 client = LSOCK_CHECKSOCKET(L, 1);
-	union LSockAddr * const addr   = LSOCK_CHECKSOCKADDR(L, 2);
+	LSockAddr * const addr   = LSOCK_CHECKSOCKADDR(L, 2);
 
 	if (connect(client, (const struct sockaddr *) addr, lua_rawlen(L, 2))) /* rawlen() for safety */
 		return LSOCK_STRERROR(L, NULL);
@@ -892,7 +892,7 @@ lsock_sendto(lua_State * const L)
 	int               i      = luaL_checknumber (L, 3        );
 	size_t            j      = luaL_checknumber (L, 4        );
 	int               flags  = luaL_checknumber (L, 5        );
-	union LSockAddr * to     = NULL;
+	LSockAddr * to     = NULL;
 	size_t            to_len = 0;
 
 	ssize_t sent             = 0;
@@ -967,6 +967,41 @@ lsock_socket(lua_State * const L)
 
 /* }}} */
 
+#ifndef _WIN32
+
+/* {{{ socketpair() */
+
+static int
+lsock_socketpair(lua_State * const L)
+{
+	lsocket pair[2] = { -1, -1 };
+	int     stat    = -1;
+
+	luaL_Stream * one = NULL;
+	luaL_Stream * two = NULL;
+
+	int domain   = luaL_checknumber(L, 1),
+	    type     = luaL_checknumber(L, 2),
+	    protocol = luaL_checknumber(L, 3);
+
+	stat = socketpair(domain, type, protocol, pair);
+
+	if (-1 == stat)
+		return LSOCK_STRERROR(L, NULL);
+
+	one    = newstream(L);
+	one->f = lsocket_to_stream(L, pair[0]);
+
+	two    = newstream(L);
+	two->f = lsocket_to_stream(L, pair[1]);
+
+	return 2;
+}
+
+/* }}} */
+
+#endif
+
 /* {{{ lsock_strerror() */
 
 static int
@@ -1038,11 +1073,24 @@ static const luaL_Reg lsocklib[] =
 	LUA_REG(linger),
 	LUA_REG(listen),
 	LUA_REG(recv),
+
+#ifndef _WIN32
+
 	LUA_REG(sendfile),
+
+#endif
+
 	LUA_REG(sendto),
 	LUA_REG(shutdown),
 	LUA_REG(sockaddr),
 	LUA_REG(socket),
+
+#ifndef _WIN32
+
+	LUA_REG(socketpair),
+
+#endif
+
 	LUA_REG(strerror),
 	LUA_REG(timeval),
 	LUA_REG(htons),
@@ -1098,6 +1146,7 @@ luaopen_lsock_core(lua_State * const L)
 	LSOCK_CONST(PF_INET6    );
 	LSOCK_CONST(PF_IPX      );
 	LSOCK_CONST(PF_IRDA     );
+	LSOCK_CONST(PF_LOCAL    );
 	LSOCK_CONST(PF_UNIX     );
 	LSOCK_CONST(PF_UNSPEC   );
 
