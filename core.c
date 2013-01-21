@@ -35,8 +35,6 @@
 #define NUL '\0'
 #define BZERO(buf, sz) memset(buf, NUL, sz)
 
-#define LSOCK_NEWUDATA(L, sz) BZERO(lua_newuserdata(L, sz), sz)
-
 #define LSOCK_FDOPEN_MODE "r+b"
 
 /* these are formed by combining the library name + '.' + data structure name (without 'struct') */
@@ -51,37 +49,27 @@ typedef SOCKET lsocket;
 typedef int    lsocket;
 #endif
 
-/* in liolib.c */
-typedef luaL_Stream LStream;
-
-typedef struct
-{
-	LStream lstream;
-	lsocket sock;
-	int     fd;
-}
-LSockStream; /* this should match LStream in Lua's source with the addition of the member 'sd' */
-
-#define  LSOCK_NEWLSOCKET(L) ((      lsocket   *) newlsockudata(L, sizeof(lsocket),         LSOCK_SOCKET  ))
-#define LSOCK_NEWSOCKADDR(L) ((union LSockAddr *) newlsockudata(L, sizeof(union LSockAddr), LSOCK_SOCKADDR))
-#define   LSOCK_NEWLINGER(L) ((struct linger   *) newlsockudata(L, sizeof(struct linger),   LSOCK_LINGER  ))
-#define  LSOCK_NEWTIMEVAL(L) ((struct timeval  *) newlsockudata(L, sizeof(struct timeval),  LSOCK_TIMEVAL ))
+#define  LSOCK_NEWLSOCKET(L) ((      lsocket   *) lsock_newudata(L, sizeof(lsocket),         LSOCK_SOCKET  ))
+#define LSOCK_NEWSOCKADDR(L) ((union LSockAddr *) lsock_newudata(L, sizeof(union LSockAddr), LSOCK_SOCKADDR))
+#define   LSOCK_NEWLINGER(L) ((struct linger   *) lsock_newudata(L, sizeof(struct linger),   LSOCK_LINGER  ))
+#define  LSOCK_NEWTIMEVAL(L) ((struct timeval  *) lsock_newudata(L, sizeof(struct timeval),  LSOCK_TIMEVAL ))
 
 #define LSOCK_CHECKSOCKADDR(L, index) ((union LSockAddr *) luaL_checkudata(L, index, LSOCK_SOCKADDR))
 #define  LSOCK_CHECKTIMEVAL(L, index) ((struct timeval  *) luaL_checkudata(L, index, LSOCK_TIMEVAL ))
 #define   LSOCK_CHECKLINGER(L, index) ((struct linger   *) luaL_checkudata(L, index, LSOCK_LINGER  ))
 
-#define   LSOCK_CHECKHANDLE(L, index) luaL_checkudata(L, index, LUA_FILEHANDLE)
-#define   LSOCK_CHECKSOCKET(L, index) (((LSockStream *) LSOCK_CHECKHANDLE(L, 1))->sock)
-#define       LSOCK_CHECKFD(L, index) (((LSockStream *) LSOCK_CHECKHANDLE(L, 1))->fd)
+#define LSOCK_CHECKSTREAM(L, index) ((luaL_Stream *) luaL_checkudata(L, index, LUA_FILEHANDLE))
+#define LSOCK_CHECKSOCKET(L, index) stream_to_lsocket(L, LSOCK_CHECKSTREAM(L, index)->f)
+#define     LSOCK_CHECKFD(L, index) stream_to_fd(L, LSOCK_CHECKSTREAM(L, index)->f)
 
 #define LSOCK_STRERROR(L, fname) lsock_error(L, errno,     &strerror, fname)
 #define LSOCK_GAIERROR(L)        lsock_error(L, errno, &gai_strerror, NULL )
+#define LSOCK_STRFATAL(L, fname) lsock_fatal(L, errno,     &strerror, fname)
 
 #ifdef _WIN32
-#	define INVALID_LSOCKET(s) (INVALID_SOCKET == s)
+#	define INVALID_SOCKET(s) (INVALID_SOCKET == s)
 #else
-#	define INVALID_LSOCKET(s) (s < 0)
+#	define INVALID_SOCKET(s) (s < 0)
 #endif
 
 /* including sockaddr_un in this only increases the byte count by 18 */
@@ -114,12 +102,12 @@ union LSockAddr
 **			- linger()   -- for get/setsockopt()
 **			- timeval()  -- for get/setsockopt()
 **
+**			- sendfile() -- only on Linux
+**
 ** ALMOST:  (the bindings are there, they need friendly/ wrapping)
 **		
-**			- send()/sendto()   -- (sendijto())
+**			- send()/sendto()   -- (sendto())
 **			- recv()/recvfrom() -- (recvfrom())
-**
-**			- sendfile() -- illegal seek?  (only available on Linux)
 **
 ** TODO:
 **			- select()
@@ -145,8 +133,6 @@ union LSockAddr
 **			- addrinfo() -- for getaddrinfo()
 */
 
-/* going to and from SOCKET and fd in Windows: _open_osfhandle()/_get_osfhandle() */
-
 /* {{{ lsock_error() */
 
 static int
@@ -168,47 +154,151 @@ lsock_error(lua_State * const L, const int err, char * (*errfunc)(int), const ch
 
 /* }}} */
 
-/* {{{ newsockstream(): based directly on: newprefile() & newfile() from Lua 5.2 sources */
+/* {{{ lsock_fatal() */
 
 static int
-lsock_io_fclose(lua_State * const L)
+lsock_fatal(lua_State * const L, const int err, char * (*errfunc)(int), const char * fname)
 {
-	LStream * const p = LSOCK_CHECKHANDLE(L, 1);
+	char * msg = errfunc(err);
 
-	const int res = fclose(p->f);
-
-	return luaL_fileresult(L, (res == 0), NULL);
-}
-
-static LSockStream *
-newsockstream(lua_State * const L)
-{
-	LSockStream * const p = LSOCK_NEWUDATA(L, sizeof(LSockStream));
-
-	p->lstream.closef = NULL; /* mark file handle as 'closed' */
-
-	luaL_setmetatable(L, LUA_FILEHANDLE);
-
-	p->lstream.f      = NULL;
-	p->lstream.closef = &lsock_io_fclose;
-
-#ifdef _WIN32
-	p->sock          = INVALID_SOCKET;
-#else
-	p->sock          = -1; /* invalid fd on Linux */
-#endif
-	
-	return p;
+	if (NULL == fname)
+		return luaL_error(L, msg);
+	else
+		return luaL_error(L, "%s: %s", fname, msg);
 }
 
 /* }}} */
 
-/* {{{ newlsockudata() */
+/* going to and from SOCKET and fd in Windows: _open_osfhandle()/_get_osfhandle() */
+
+/* {{{ stream_to_fd() */
+
+static int
+stream_to_fd(lua_State * const L, FILE * const stream)
+{
+	int fd = -1;
+
+#ifdef _WIN32
+	fd = _fileno(stream);
+#else
+	fd = fileno(stream);
+#endif
+
+	if (-1 == fd)
+#ifdef _WIN32
+		luaL_error(L, "_fileno(): %s", strerror(errno));
+#else
+		luaL_error(L, "fileno(): %s", strerror(errno));
+#endif
+
+	return fd;
+}
+
+/* }}} */
+
+/* {{{ fd_to_stream() */
+
+static FILE *
+fd_to_stream(lua_State * const L, const int fd)
+{
+	FILE * stream = NULL;
+
+#ifdef _WIN32
+	stream = _fdopen(fd, LSOCK_FDOPEN_MODE);
+#else
+	stream = fdopen(fd, LSOCK_FDOPEN_MODE);
+#endif
+
+	if (NULL == stream)
+#ifdef _WIN32
+		LSOCK_STRFATAL(L, "_fdopen()");
+#else
+		LSOCK_STRFATAL(L, "fdopen()");
+#endif
+
+	return stream;
+}
+
+/* }}} */
+
+/* {{{ lsocket_to_fd() */
+
+static int
+lsocket_to_fd(lua_State * const L, const lsocket sock)
+{
+
+#ifdef _WIN32
+	int fd = -1;
+
+	fd = _open_osfhandle(handle, 0); /* no _O_APPEND, _O_RDONLY, _O_TEXT */
+
+	if (-1 == fd)
+		LSOCK_STRFATAL(L, "_open_osfhandle()");
+
+	return fd;
+#else
+	(void) L;
+
+	return sock;
+#endif
+
+}
+
+/* }}} */
+
+/* {{{ fd_to_lsocket() */
+
+static lsocket
+fd_to_lsocket(lua_State * const L, const int fd)
+{
+
+#ifdef _WIN32
+	lsocket l = _get_osfhandle(fd);
+
+	if (INVALID_HANDLE_VALUE == l)
+		return luaL_error("_get_osfhandle(): %s", strerror(errno));
+
+	return l;
+#else
+	(void) L;
+
+	return fd; /* hah */
+#endif
+
+}
+
+/* }}} */
+
+/* {{{ stream_to_lsocket() */
+
+static lsocket
+stream_to_lsocket(lua_State * const L, FILE * const stream)
+{
+	/* wheee shortness. */
+	return fd_to_lsocket(L, stream_to_fd(L, stream));
+}
+
+/* }}} */
+
+/* {{{ lsocket_to_stream() */
+
+static FILE *
+lsocket_to_stream(lua_State * const L, const lsocket sock)
+{
+	/* \o/ \o| |o/ \o/ \o| |o/ \o/ */
+	return fd_to_stream(L, lsocket_to_fd(L, sock));
+}
+
+/* }}} */
+
+/* {{{ lsock_newudata() */
 
 static void *
-newlsockudata(lua_State * const L, const size_t sz, const char * const registry_type)
+lsock_newudata(lua_State * const L, const size_t sz, const char * const registry_type)
 {
-	void * const p = LSOCK_NEWUDATA(L, sz);
+	void * const p = lua_newuserdata(L, sz);
+
+	BZERO(p, sizeof(sz));
 
 	luaL_setmetatable(L, registry_type);
 
@@ -217,44 +307,25 @@ newlsockudata(lua_State * const L, const size_t sz, const char * const registry_
 
 /* }}} */
 
-/* {{{ fdopen_lsocket() */
+/* {{{ lsock_newstream(): based directly on: newprefile() & newfile() from Lua 5.2 sources */
 
-/* meant to take the raw lsocket type and an LSockStream and fill out the fields as it converts it into an fd (for Windows mostly) */
 static int
-fdopen_lsocket(lua_State * const L, const lsocket sock, LSockStream * stream)
+close_stream(lua_State * const L)
 {
-	FILE * sockfile = NULL;
-	int    fd       = -1;
+	luaL_Stream * const p = LSOCK_CHECKSTREAM(L, 1);
 
-	if (INVALID_LSOCKET(sock))
-		return LSOCK_STRERROR(L, NULL);
+	return luaL_fileresult(L, (0 == fclose(p->f)), NULL);
+}
 
-	stream->sock = sock;
+static luaL_Stream *
+newstream(lua_State * const L)
+{
+	luaL_Stream * const p = lsock_newudata(L, sizeof(luaL_Stream), LUA_FILEHANDLE);
 
-	/* socket() gives us a SOCKET, not an fd, on Windows */
-#ifdef _WIN32
-	fd = _open_osfhandle(handle, 0); /* no _O_APPEND, _O_RDONLY, _O_TEXT */
+	p->f      = NULL;
+	p->closef = &close_stream;
 
-	if (-1 == fd)
-		return LSOCK_STRERROR(L, "_open_osfhandle()");
-#else
-	fd = sock; /* hah. */
-#endif
-
-	stream->fd = fd;
-
-	sockfile = fdopen(fd, LSOCK_FDOPEN_MODE);
-
-	if (NULL == sockfile)
-#ifdef _WIN32 /* maybe this is overdoing it. */
-		return LSOCK_STRERROR(L, "_fdopen()"); /* Windows has _fdopen() to be ISO conformant, apparently */
-#else
-		return LSOCK_STRERROR(L, "fdopen()");
-#endif
-
-	stream->lstream.f = sockfile;
-
-	return 0;
+	return p;
 }
 
 /* }}} */
@@ -366,10 +437,10 @@ lsock_ntohl(lua_State * const L)
 static int
 lsock_sendfile(lua_State * const L)
 {
-	int       out = LSOCK_CHECKFD(L, 1);
-	int        in = LSOCK_CHECKFD(L, 2);
+	int    out    = LSOCK_CHECKFD(L, 1);
+	int    in     = LSOCK_CHECKFD(L, 2);
 	off_t  offset = luaL_checkint(L, 3);
-	size_t  count = luaL_checkint(L, 4);
+	size_t count  = luaL_checkint(L, 4);
 
 	/* I know sendfile() acts different when offset is NULL,
 	** but you can get the current offset of `in' from Lua with :seek() */
@@ -700,17 +771,21 @@ lsock__sockaddr_getset(lua_State * const L)
 static int
 lsock_accept(lua_State * const L)
 {
-	lsocket                serv = LSOCK_CHECKSOCKET(L, 1);
+	socklen_t         sz      = 0;
+	lsocket           serv    = LSOCK_CHECKSOCKET(L, 1);
+	union LSockAddr * info    = NULL;
+	luaL_Stream     * newfh   = NULL;
 
-	union LSockAddr      * info     = LSOCK_NEWSOCKADDR(L);
-	socklen_t              sz       = sizeof(union LSockAddr);
+	lsocket           newsock = accept(serv, (struct sockaddr *) info, &sz);
 
-	lsocket                sock     = accept(serv, (struct sockaddr *) info, &sz);
-	LSockStream          * sockfile = newsockstream(L);
+	if (INVALID_SOCKET(newsock))
+		return LSOCK_STRERROR(L, NULL);
 
-	/* the way this signals an error is unfortunate */
-	if (fdopen_lsocket(L, sock, sockfile))
-		return 3;
+	newfh = newstream(L);
+	info  = LSOCK_NEWSOCKADDR(L);
+	sz    = lua_rawlen(L, -1); /* just because */
+
+	newfh->f = lsocket_to_stream(L, newsock);
 
 	return 2;
 }
@@ -723,7 +798,7 @@ static int
 lsock_listen(lua_State * const L)
 {
 	lsocket      serv = LSOCK_CHECKSOCKET(L, 1);
-	const int backlog = luaL_checkint(L, 2);
+	const int backlog = luaL_checknumber(L, 2);
 
 	if (listen(serv, backlog))
 		return LSOCK_STRERROR(L, NULL);
@@ -742,10 +817,10 @@ lsock_listen(lua_State * const L)
 static int
 lsock_bind(lua_State * const L)
 {
-	lsocket     serv = LSOCK_CHECKSOCKET(L, 1);
+	lsocket                 serv =   LSOCK_CHECKSOCKET(L, 1);
 	union LSockAddr * const addr = LSOCK_CHECKSOCKADDR(L, 2);
 
-	if (bind(serv, (const struct sockaddr *) addr, lua_rawlen(L, 2))) /* note use of rawlen() instead of sizeof(union LSockAddr) -- just to be safe */
+	if (bind(serv, (const struct sockaddr *) addr, lua_rawlen(L, 2)))
 		return LSOCK_STRERROR(L, NULL);
 
 	lua_pushboolean(L, 1);
@@ -762,7 +837,7 @@ lsock_bind(lua_State * const L)
 static int
 lsock_connect(lua_State * const L)
 {
-	lsocket     client = LSOCK_CHECKSOCKET(L, 1);
+	lsocket                 client = LSOCK_CHECKSOCKET(L, 1);
 	union LSockAddr * const addr   = LSOCK_CHECKSOCKADDR(L, 2);
 
 	if (connect(client, (const struct sockaddr *) addr, lua_rawlen(L, 2))) /* rawlen() for safety */
@@ -777,14 +852,12 @@ lsock_connect(lua_State * const L)
 
 /* {{{ lsock_recv() */
 
-/* recv(sock, length, flags) -> 3, 'cat' */
-
 static int
 lsock_recv(lua_State * const L)
 {
 	lsocket sock  = LSOCK_CHECKSOCKET(L, 1);
-	size_t length = luaL_checkint(L, 2);
-	int    flags  = luaL_checkint(L, 3);
+	size_t length = luaL_checknumber(L, 2);
+	int    flags  = luaL_checknumber(L, 3);
 
 	char * buf    = NULL;
 	int    gotten = 0;
@@ -807,41 +880,40 @@ lsock_recv(lua_State * const L)
 
 /* }}} */
 
-/* {{{ lsock_sendijto() */
+/* {{{ lsock_sendto() */
 
 static int
-lsock_sendijto(lua_State * const L)
+lsock_sendto(lua_State * const L)
 {
 	size_t s_len = 0;
 
-	lsocket      sock         = LSOCK_CHECKSOCKET(L, 1);
-	const char * s            = luaL_checklstring(L, 2, &s_len);
-	int          i            = luaL_checkint    (L, 3        );
-	size_t       j            = luaL_checkint    (L, 4        );
-	int          flags        = luaL_checkint    (L, 5        );
+	lsocket           sock   = LSOCK_CHECKSOCKET(L, 1        );
+	const char      * s      = luaL_checklstring(L, 2, &s_len);
+	int               i      = luaL_checknumber (L, 3        );
+	size_t            j      = luaL_checknumber (L, 4        );
+	int               flags  = luaL_checknumber (L, 5        );
+	union LSockAddr * to     = NULL;
+	size_t            to_len = 0;
 
-	union LSockAddr * to = NULL;
-	size_t dest_len           = 0;
-
-	ssize_t sent              = 0;
+	ssize_t sent             = 0;
 
 	if (!lua_isnone(L, 6))
 	{
-		to       = LSOCK_CHECKSOCKADDR(L, 6);
-		dest_len = lua_rawlen(L, 6); /* important */
+		to     = LSOCK_CHECKSOCKADDR(L, 6);
+		to_len = lua_rawlen(L, 6); /* important */
 	}
 
 	sent = 0;
 
 	if (i < 1 || j > s_len)
-		luaL_error(L, "out of bounds [%d, %d]; send data is %d bytes", i, j, s_len);
+		luaL_error(L, "out of bounds (%d,%d), send data is %d bytes", i, j, s_len);
 
-	sent = sendto(sock, s + (i - 1), j - (i + 1), flags, (const struct sockaddr *) to, dest_len);
+	sent = sendto(sock, s + (i - 1), j - (i + 1), flags, (const struct sockaddr *) to, to_len);
 
 	if (-1 == sent)
-		return LSOCK_STRERROR(L, "sendto()");
+		return LSOCK_STRERROR(L, NULL);
 
-	lua_pushinteger(L, sent);
+	lua_pushnumber(L, sent);
 
 	return 1; /* success! */
 }
@@ -857,7 +929,7 @@ static int
 lsock_shutdown(lua_State * const L)
 {
 	lsocket sock = LSOCK_CHECKSOCKET(L, 1);
-	int     how  = luaL_checkint(L, 2);
+	int     how  =  luaL_checknumber(L, 2);
 
 	if (shutdown(sock, how))
 		return LSOCK_STRERROR(L, NULL);
@@ -876,16 +948,19 @@ lsock_shutdown(lua_State * const L)
 static int
 lsock_socket(lua_State * const L)
 {
-	int domain   = luaL_checkint(L, 1),
-		type     = luaL_checkint(L, 2),
-		protocol = luaL_checkint(L, 3);
+	int domain   = luaL_checknumber(L, 1),
+		type     = luaL_checknumber(L, 2),
+		protocol = luaL_checknumber(L, 3);
 
-	lsocket       sock     = socket(domain, type, protocol);
-	LSockStream * sockfile = newsockstream(L);
+	lsocket       sock   = socket(domain, type, protocol);
+	luaL_Stream * stream = NULL;
 
-	/* bad semantics is bad */
-	if (fdopen_lsocket(L, sock, sockfile))
-		return 3;
+	if (INVALID_SOCKET(sock))
+		return LSOCK_STRERROR(L, NULL);
+
+	stream = newstream(L);
+
+	stream->f = lsocket_to_stream(L, sock);
 
 	return 1;
 }
@@ -897,7 +972,7 @@ lsock_socket(lua_State * const L)
 static int
 lsock_strerror(lua_State * const L)
 {
-	lua_pushstring(L, strerror(luaL_checkint(L, 1)));
+	lua_pushstring(L, strerror(luaL_checknumber(L, 1)));
 
 	return 1;
 }
@@ -909,7 +984,7 @@ lsock_strerror(lua_State * const L)
 static int
 lsock_gai_strerror(lua_State * const L)
 {
-	lua_pushstring(L, strerror(luaL_checkint(L, 1)));
+	lua_pushstring(L, gai_strerror(luaL_checkint(L, 1)));
 
 	return 1;
 }
@@ -923,7 +998,9 @@ lsock_gai_strerror(lua_State * const L)
 static int
 lsock_getfd(lua_State * const L)
 {
-	lua_pushnumber(L, LSOCK_CHECKFD(L, 1));
+	luaL_Stream * const file = LSOCK_CHECKSTREAM(L, 1);
+
+	lua_pushnumber(L, stream_to_fd(L, file->f));
 
 	return 1;
 }
@@ -962,7 +1039,7 @@ static const luaL_Reg lsocklib[] =
 	LUA_REG(listen),
 	LUA_REG(recv),
 	LUA_REG(sendfile),
-	LUA_REG(sendijto),
+	LUA_REG(sendto),
 	LUA_REG(shutdown),
 	LUA_REG(sockaddr),
 	LUA_REG(socket),
