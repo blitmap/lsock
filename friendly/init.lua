@@ -71,4 +71,9 @@ for _, v in pairs({ 'socket', 'sockaddr', 'listen', 'shutdown' }) do
 	require(... .. '.' .. v)
 end
 
+-- if it's there...
+if core.sendfile then
+	require(... .. '.sendfile')
+end
+
 return true

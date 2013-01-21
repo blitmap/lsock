@@ -26,6 +26,7 @@
 #	include <unistd.h>
 #	include <errno.h>
 #	include <sys/time.h>
+#	include <sys/sendfile.h>
 #endif
 
 #include <lauxlib.h>
@@ -66,13 +67,13 @@ LSockStream; /* this should match LStream in Lua's source with the addition of t
 #define   LSOCK_NEWLINGER(L) ((struct linger   *) newlsockudata(L, sizeof(struct linger),   LSOCK_LINGER  ))
 #define  LSOCK_NEWTIMEVAL(L) ((struct timeval  *) newlsockudata(L, sizeof(struct timeval),  LSOCK_TIMEVAL ))
 
-#define   LSOCK_CHECKHANDLE(L, index)                      luaL_checkudata(L, index, LUA_FILEHANDLE)
 #define LSOCK_CHECKSOCKADDR(L, index) ((union LSockAddr *) luaL_checkudata(L, index, LSOCK_SOCKADDR))
 #define  LSOCK_CHECKTIMEVAL(L, index) ((struct timeval  *) luaL_checkudata(L, index, LSOCK_TIMEVAL ))
 #define   LSOCK_CHECKLINGER(L, index) ((struct linger   *) luaL_checkudata(L, index, LSOCK_LINGER  ))
 
-#define   LSOCK_CHECKSOCKET(L, index) (((LSockStream *) (LSOCK_CHECKHANDLE(L, 1)))->sock)
-#define       LSOCK_CHECKFD(L, index) (((LSockStream *) (LSOCK_CHECKHANDLE(L, 1)))->fd)
+#define   LSOCK_CHECKHANDLE(L, index) luaL_checkudata(L, index, LUA_FILEHANDLE)
+#define   LSOCK_CHECKSOCKET(L, index) (((LSockStream *) LSOCK_CHECKHANDLE(L, 1))->sock)
+#define       LSOCK_CHECKFD(L, index) (((LSockStream *) LSOCK_CHECKHANDLE(L, 1))->fd)
 
 #define LSOCK_STRERROR(L, fname) lsock_error(L, errno,     &strerror, fname)
 #define LSOCK_GAIERROR(L)        lsock_error(L, errno, &gai_strerror, NULL )
@@ -117,6 +118,8 @@ union LSockAddr
 **		
 **			- send()/sendto()   -- (sendijto())
 **			- recv()/recvfrom() -- (recvfrom())
+**
+**			- sendfile() -- illegal seek?  (only available on Linux)
 **
 ** TODO:
 **			- select()
@@ -353,6 +356,37 @@ lsock_ntohl(lua_State * const L)
 }
 
 /* }}} */
+
+#ifndef _WIN32 
+
+/* {{{ lsock_sendfile() */
+
+/* USERS SHOULD SET THE NEW OFFSET OF `in' AFTER SENDFILE()'ING */
+
+static int
+lsock_sendfile(lua_State * const L)
+{
+	int       out = LSOCK_CHECKFD(L, 1);
+	int        in = LSOCK_CHECKFD(L, 2);
+	off_t  offset = luaL_checkint(L, 3);
+	size_t  count = luaL_checkint(L, 4);
+
+	/* I know sendfile() acts different when offset is NULL,
+	** but you can get the current offset of `in' from Lua with :seek() */
+	ssize_t sent = sendfile(out, in, &offset, count);
+
+	if (-1 == sent)
+		return LSOCK_STRERROR(L, NULL);
+
+	lua_pushnumber(L, sent);
+	lua_pushnumber(L, offset); /* just for aqua */
+
+	return 2;
+}
+
+/* }}} */
+
+#endif
 
 /* {{{ lsock_sockaddr() -> lsock_sockaddr userdata */
 
@@ -882,22 +916,6 @@ lsock_gai_strerror(lua_State * const L)
 
 /* }}} */
 
-/* {{{ lsock_shutdown() */
-
-#ifdef _WIN32
-
-static void
-lsock_cleanup(lua_State * const L)
-{
-	((void) L);
-
-	WSACleanup();
-}
-
-#endif
-
-/* }}} */
-
 /* {{{ lsock_getfd() */
 
 /* for working with (some) luasocket stuff */
@@ -911,6 +929,22 @@ lsock_getfd(lua_State * const L)
 }
 
 /* }}} */
+
+#ifdef _WIN32
+
+/* {{{ lsock_shutdown() */
+
+static void
+lsock_cleanup(lua_State * const L)
+{
+	((void) L);
+
+	WSACleanup();
+}
+
+/* }}} */
+
+#endif
 
 /* {{{ luaopen_lsock_core() */
 
@@ -927,6 +961,7 @@ static const luaL_Reg lsocklib[] =
 	LUA_REG(linger),
 	LUA_REG(listen),
 	LUA_REG(recv),
+	LUA_REG(sendfile),
 	LUA_REG(sendijto),
 	LUA_REG(shutdown),
 	LUA_REG(sockaddr),
