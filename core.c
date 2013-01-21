@@ -341,7 +341,7 @@ lsock_ntohl(lua_State * const L)
 	size_t       l = 0;
 	const char * s = luaL_checklstring(L, 1, &l);
 
-	if (sizeof(uint32_t) != l) /* obviously 2 bytes... */
+	if (sizeof(uint32_t) != l) /* 4 bytes */
 	{
 		lua_pushnil(L);
 		lua_pushstring(L, "string length must be sizeof(uint32_t) (4 bytes)");
