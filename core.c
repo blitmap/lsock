@@ -1,4 +1,4 @@
-/* compile: gcc -o core{.so,.c} -shared -fPIC -W -Wall -O2 -g -llua -lm -ldl -pedantic -ansi -std=c89 -flto -fstack-protector-all */
+/* compile: gcc -o core.{so,c} -shared -fPIC -W -Wall -O2 -g -llua -lm -ldl -pedantic -ansi -std=c89 -flto -fstack-protector-all */
 
 #ifndef _POSIX_SOURCE
 #	define _POSIX_SOURCE
@@ -1100,6 +1100,32 @@ lsock_getfd(lua_State * const L)
 
 /* }}} */
 
+/* {{{ lsock_getfh() */
+
+static int
+lsock_getfh(lua_State * const L)
+{
+	luaL_Stream * const stream = LSOCK_CHECKSTREAM(L, 1);
+
+	lua_pushnumber(L, stream_to_lsocket(L, stream->f));
+
+	return 1;
+}
+
+/* }}} */
+
+/* {{{ lsock_getstream() */
+
+static int 
+lsock_getstream(lua_State * const L)
+{
+	lua_pushlightuserdata(L, (LSOCK_CHECKSTREAM(L, 1))->f);
+
+	return 1;
+}
+
+/* }}} */
+
 #ifdef _WIN32
 
 /* {{{ lsock_shutdown() */
@@ -1129,6 +1155,8 @@ static const luaL_Reg lsocklib[] =
 	LUA_REG(connect),
 	LUA_REG(gai_strerror),
 	LUA_REG(getfd),
+	LUA_REG(getfh),
+	LUA_REG(getstream),
 	LUA_REG(linger),
 	LUA_REG(listen),
 	LUA_REG(recv),
