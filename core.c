@@ -30,6 +30,7 @@
 #	include <fcntl.h>
 #	include <stropts.h>
 #	include <sys/ioctl.h>
+#	include <sys/select.h>
 #endif
 
 #include <lauxlib.h>
@@ -77,6 +78,8 @@ typedef int    lsocket;
 #	define LSOCK_ERRNO       errno
 #endif
 
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+
 /* including sockaddr_un in this only increases the byte count by 18 */
 typedef union
 {
@@ -101,6 +104,8 @@ typedef union
 **			- listen()
 **			- shutdown()
 **
+**			- select() -- I might make an fd_set constructor + helper methods later on
+**
 **			- strerror()
 **			- gai_strerror()
 **
@@ -111,22 +116,20 @@ typedef union
 **			- sendfile()   -- only on Linux
 **			- socketpair() -- only on Linux
 **
-** ALMOST:  (the bindings are there, they need friendly/ wrapping)
-**		
+** ALMOST:
 **			- send()/sendto()   -- (sendto())
 **			- recv()/recvfrom() -- (recvfrom())
 **
 ** TODO:
-**			- select()
-**
 **			- getaddrinfo()
 **			- getnameinfo() -- low priority?
+**			- addrinfo() -- for getaddrinfo()
+**
 **			- ioctl()
 **			- getsockopt()
 **			- setsockopt()
-**			- getsockname() -- can be done in Lua
 **
-**			- getsockname()
+**			- getsockname() -- can be done in Lua
 **			- getpeername()
 **
 **			- htond()      -- only on Windows
@@ -135,8 +138,6 @@ typedef union
 **			- ntohd()      -- only on Windows
 **			- ntohf()      -- only on Windows
 **			- ntohll()     -- only on Windows
-**
-**			- addrinfo() -- for getaddrinfo()
 */
 
 /* {{{ lsock_error() */
@@ -1025,6 +1026,115 @@ lsock_blocking(lua_State * const L)
 
 /* }}} */
 
+/* {{{ lsock_select() */
+
+enum { R_SET, W_SET, E_SET };
+
+static int
+lsock_select(lua_State * const L)
+{
+	fd_set r, w, e;
+	struct timeval * timeout;
+	int x, y, stat;
+
+	int highsock = 0;
+
+	luaL_checktype(L, 1, LUA_TTABLE); /*  readfds */
+	luaL_checktype(L, 2, LUA_TTABLE); /* writefds */
+	luaL_checktype(L, 3, LUA_TTABLE); /* errorfds */
+
+	timeout = lua_isnoneornil(L, 4) ? NULL : LSOCK_CHECKTIMEVAL(L, 4);
+
+	FD_ZERO(&r);
+	FD_ZERO(&w);
+	FD_ZERO(&e);
+
+	/* parse tables into fd_sets */
+	for (x = 1; x <= 3; x++)
+	{
+		int how_many = 0;
+
+		lua_len(L, x);
+
+		how_many = lua_tonumber(L, -1);
+
+		lua_pop(L, 1);
+
+		for (y = 1; y <= how_many; y++)
+		{
+			int fd = -1;
+
+			lua_pushnumber(L, y);
+			lua_gettable(L, x);
+
+			fd = LSOCK_CHECKFD(L, -1);
+
+			highsock = MAX(highsock, fd);
+
+			switch (x)
+			{
+				case R_SET: FD_SET(fd, &r); break;
+				case W_SET: FD_SET(fd, &w); break;
+				case E_SET: FD_SET(fd, &e); break;
+			}
+		}
+	}
+
+	stat = select(highsock + 1, &r, &w, &e, timeout);
+
+	if (-1 == stat)
+		LSOCK_STRERROR(L, NULL);
+
+	/* parse fd_sets back into tables */
+	for (x = 1; x <= 3; x++)
+	{
+		int how_many = 0;
+
+		lua_len(L, x);
+
+		how_many = lua_tonumber(L, -1);
+
+		lua_pop(L, 1);
+
+		/* reuse stat for how many array elems we might have */
+		lua_createtable(L, stat, 0);
+
+		for (y = 1; y <= how_many; y++)
+		{
+			int isset =  0;
+			int fd    = -1;
+
+			/* push the file handle (socket) userdata */
+			lua_pushnumber(L, y);
+			lua_gettable(L, x);
+
+			fd = LSOCK_CHECKFD(L, -1);
+
+			switch (x)
+			{
+				case R_SET: isset = FD_ISSET(fd, &r); break;
+				case W_SET: isset = FD_ISSET(fd, &w); break;
+				case E_SET: isset = FD_ISSET(fd, &e); break;
+			}
+
+			if (isset)
+			{
+				lua_pushnumber(L, y); /* the numeric index */
+				lua_pushvalue(L, -2); /* the file handle */
+				lua_settable(L, -4);  /* the new outgoing table */
+			}
+
+			/* remove the file handle userdata */
+			lua_pop(L, 1);
+		}
+	}
+
+	/* returns the read, write, and exception tables */
+	return 3;
+}
+
+/* }}} */
+
 #ifndef _WIN32
 
 /* {{{ socketpair() */
@@ -1160,6 +1270,7 @@ static const luaL_Reg lsocklib[] =
 	LUA_REG(linger),
 	LUA_REG(listen),
 	LUA_REG(recv),
+	LUA_REG(select),
 
 #ifndef _WIN32
 
