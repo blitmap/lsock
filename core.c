@@ -1004,7 +1004,7 @@ lsock_blocking(lua_State * const L)
 	if (-1 == flags)
 		return LSOCK_STRERROR(L, "fcntl(F_GETFL)");
 
-	flags |= block ? O_NONBLOCK : 0;
+	flags |= (block ? O_NONBLOCK : 0);
 
 	flags = fcntl(s, F_SETFL, flags);
 
