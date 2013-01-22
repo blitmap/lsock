@@ -120,14 +120,13 @@ typedef union
 **			- getpeername()
 **
 **			- getaddrinfo()
+**			- getnameinfo()
 **
 ** ALMOST:
 **			- send()/sendto()   -- (sendto())
 **			- recv()/recvfrom() -- (recvfrom())
 **
 ** TODO:
-**			- getnameinfo() -- low priority?
-**
 **			- ioctl()       -- unnecessary?
 **			- getsockopt()
 **			- setsockopt()
@@ -511,7 +510,7 @@ static int
 lsock_getaddrinfo(lua_State * const L)
 {
 	int ret;
-	int i;
+	int i = 1;
 
 	struct addrinfo hints, * info, * p;
 
@@ -565,21 +564,41 @@ lsock_getaddrinfo(lua_State * const L)
 
 	lua_newtable(L);
 
-	i = 1;
-
-	for (p = info; p != NULL; p = p->ai_next)
+	for (p = info; p != NULL; p = (i++, p->ai_next))
 	{
 		LSockAddr * tmp = NULL;
 
 		lua_pushnumber(L, i);
 
+		lua_newtable(L);
+
+		lua_pushnumber(L, p->ai_flags);
+		lua_setfield(L, -2, "ai_flags");
+
+		lua_pushnumber(L, p->ai_family);
+		lua_setfield(L, -2, "ai_family");
+
+		lua_pushnumber(L, p->ai_socktype);
+		lua_setfield(L, -2, "ai_socktype");
+
+		lua_pushnumber(L, p->ai_protocol);
+		lua_setfield(L, -2, "ai_protocol");
+
+		lua_pushnumber(L, p->ai_addrlen);
+		lua_setfield(L, -2, "ai_addrlen");
+
 		tmp = LSOCK_NEWSOCKADDR(L);
-
 		memcpy(tmp, p->ai_addr, p->ai_addrlen);
+		lua_setfield(L, -2, "ai_addr");
 
-		lua_settable(L, -3); /* newtable[1] = sockaddr userdata */
 
-		i++;
+		if (NULL != p->ai_canonname)
+		{
+			lua_pushstring(L, p->ai_canonname);
+			lua_setfield(L, -2, "ai_canonname");
+		}
+
+		lua_settable(L, -3);
 	}
 
 	if (NULL != info->ai_canonname)
@@ -591,6 +610,35 @@ lsock_getaddrinfo(lua_State * const L)
 	freeaddrinfo(info);
 
 	return ret;
+}
+
+/* }}} */
+
+/* {{{ lsock_getnameinfo() */
+
+static int
+lsock_getnameinfo(lua_State * const L)
+{
+	char hbuf[NI_MAXHOST], sbuf[NI_MAXSERV];
+
+	LSockAddr * const sa    = LSOCK_CHECKSOCKADDR(L, 1);
+	lua_Number        flags = luaL_checknumber(L, 2);
+	size_t sz               = lua_rawlen(L, 1);
+
+	int stat = 0;
+
+	BZERO(hbuf, NI_MAXHOST);
+	BZERO(sbuf, NI_MAXSERV);
+
+	stat = getnameinfo((const struct sockaddr *) sa, sz, hbuf, sizeof(hbuf), sbuf, sizeof(sbuf), flags);
+
+	if (0 != stat)
+		return LSOCK_GAIERROR(L, stat);
+
+	lua_pushstring(L, hbuf);
+	lua_pushstring(L, sbuf);
+	
+	return 2;
 }
 
 /* }}} */
@@ -1392,6 +1440,7 @@ static const luaL_Reg lsocklib[] =
 	LUA_REG(getfd),
 	LUA_REG(getfh),
 	LUA_REG(getpeername),
+	LUA_REG(getnameinfo),
 	LUA_REG(getsockname),
 	LUA_REG(getstream),
 	LUA_REG(linger),
@@ -1542,6 +1591,16 @@ luaopen_lsock_core(lua_State * const L)
 	LSOCK_CONST(AI_NUMERICSERV             );
 	LSOCK_CONST(AI_PASSIVE                 );
 	LSOCK_CONST(AI_V4MAPPED                );
+
+	/* getnameinfo() constants */
+	LSOCK_CONST(NI_DGRAM                   );
+	LSOCK_CONST(NI_IDN                     );
+	LSOCK_CONST(NI_IDN_ALLOW_UNASSIGNED    );
+	LSOCK_CONST(NI_IDN_USE_STD3_ASCII_RULES);
+	LSOCK_CONST(NI_NAMEREQD                );
+	LSOCK_CONST(NI_NOFQDN                  );
+	LSOCK_CONST(NI_NUMERICHOST             );
+	LSOCK_CONST(NI_NUMERICSERV             );
 
 	/* getaddrinfo() errors */
 	LSOCK_CONST(EAI_ADDRFAMILY);
