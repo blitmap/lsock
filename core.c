@@ -116,6 +116,9 @@ typedef union
 **			- sendfile()   -- only on Linux
 **			- socketpair() -- only on Linux
 **
+**			- getsockname()
+**			- getpeername()
+**
 ** ALMOST:
 **			- send()/sendto()   -- (sendto())
 **			- recv()/recvfrom() -- (recvfrom())
@@ -123,21 +126,18 @@ typedef union
 ** TODO:
 **			- getaddrinfo()
 **			- getnameinfo() -- low priority?
-**			- addrinfo() -- for getaddrinfo()
+**			- addrinfo()    -- for getaddrinfo()
 **
-**			- ioctl()
+**			- ioctl()       -- unnecessary?
 **			- getsockopt()
 **			- setsockopt()
 **
-**			- getsockname() -- can be done in Lua
-**			- getpeername()
-**
-**			- htond()      -- only on Windows
-**			- htonf()      -- only on Windows
-**			- htonll()     -- only on Windows
-**			- ntohd()      -- only on Windows
-**			- ntohf()      -- only on Windows
-**			- ntohll()     -- only on Windows
+**			- htond()       -- only on Windows
+**			- htonf()       -- only on Windows
+**			- htonll()      -- only on Windows
+**			- ntohd()       -- only on Windows
+**			- ntohf()       -- only on Windows
+**			- ntohll()      -- only on Windows
 */
 
 /* {{{ lsock_error() */
@@ -435,7 +435,7 @@ lsock_ntohl(lua_State * const L)
 
 /* }}} */
 
-#ifndef _WIN32 
+#ifndef _WIN32
 
 /* {{{ lsock_sendfile() */
 
@@ -794,10 +794,10 @@ lsock__sockaddr_getset(lua_State * const L)
 static int
 lsock_accept(lua_State * const L)
 {
-	socklen_t         sz      = 0;
-	lsocket           serv    = LSOCK_CHECKSOCKET(L, 1);
-	LSockAddr * info    = NULL;
-	luaL_Stream     * newfh   = NULL;
+	socklen_t     sz      = 0;
+	lsocket       serv    = LSOCK_CHECKSOCKET(L, 1);
+	LSockAddr   * info    = NULL;
+	luaL_Stream * newfh   = NULL;
 
 	lsocket           newsock = accept(serv, (struct sockaddr *) info, &sz);
 
@@ -867,6 +867,40 @@ lsock_connect(lua_State * const L)
 		return LSOCK_STRERROR(L, NULL);
 
 	lua_pushboolean(L, 1);
+
+	return 1;
+}
+
+/* }}} */
+
+/* {{{ lsock_getsockname() */
+
+static int
+lsock_getsockname(lua_State * const L)
+{
+	lsocket s              = LSOCK_CHECKSOCKET(L, 1);
+	LSockAddr * const addr = LSOCK_NEWSOCKADDR(L);
+	socklen_t           sz = lua_rawlen(L, -1);
+
+	if (getsockname(s, (struct sockaddr *) addr, &sz))
+		return LSOCK_STRERROR(L, NULL);
+
+	return 1;
+}
+
+/* }}} */
+
+/* {{{ lsock_getpeername() */
+
+static int
+lsock_getpeername(lua_State * const L)
+{
+	lsocket              s = LSOCK_CHECKSOCKET(L, 1);
+	LSockAddr * const addr = LSOCK_NEWSOCKADDR(L);
+	socklen_t           sz = lua_rawlen(L, -1);
+
+	if (getpeername(s, (struct sockaddr *) addr, &sz))
+		return LSOCK_STRERROR(L, NULL);
 
 	return 1;
 }
@@ -1149,8 +1183,8 @@ lsock_socketpair(lua_State * const L)
 	luaL_Stream * two = NULL;
 
 	int domain   = luaL_checknumber(L, 1),
-	    type     = luaL_checknumber(L, 2),
-	    protocol = luaL_checknumber(L, 3);
+		type     = luaL_checknumber(L, 2),
+		protocol = luaL_checknumber(L, 3);
 
 	stat = socketpair(domain, type, protocol, pair);
 
@@ -1226,7 +1260,7 @@ lsock_getfh(lua_State * const L)
 
 /* {{{ lsock_getstream() */
 
-static int 
+static int
 lsock_getstream(lua_State * const L)
 {
 	lua_pushlightuserdata(L, (LSOCK_CHECKSTREAM(L, 1))->f);
@@ -1266,6 +1300,8 @@ static const luaL_Reg lsocklib[] =
 	LUA_REG(gai_strerror),
 	LUA_REG(getfd),
 	LUA_REG(getfh),
+	LUA_REG(getpeername),
+	LUA_REG(getsockname),
 	LUA_REG(getstream),
 	LUA_REG(linger),
 	LUA_REG(listen),
