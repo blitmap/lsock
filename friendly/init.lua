@@ -67,7 +67,7 @@ for _, v in pairs({ 'linger', 'timeval' }) do
 end
 
 -- anything that needs more complex friendly setup gets loaded here
-for _, v in pairs({ 'select', 'sockaddr', 'socket', 'listen', 'shutdown' }) do
+for _, v in pairs({ 'getaddrinfo', 'select', 'sockaddr', 'socket', 'listen', 'shutdown' }) do
 	require(... .. '.' .. v)
 end
 

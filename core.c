@@ -66,9 +66,9 @@ typedef int    lsocket;
 #define LSOCK_CHECKSOCKET(L, index) stream_to_lsocket(L, LSOCK_CHECKSTREAM(L, index)->f)
 #define     LSOCK_CHECKFD(L, index) stream_to_fd(L, LSOCK_CHECKSTREAM(L, index)->f)
 
-#define LSOCK_STRERROR(L, fname) lsock_error(L, LSOCK_ERRNO,     &strerror, fname)
-#define LSOCK_GAIERROR(L)        lsock_error(L, LSOCK_ERRNO, &gai_strerror, NULL )
-#define LSOCK_STRFATAL(L, fname) lsock_fatal(L, LSOCK_ERRNO,     &strerror, fname)
+#define LSOCK_STRERROR(L, fname) lsock_error(L, LSOCK_ERRNO, (char * (*)(int)) &strerror,     fname)
+#define LSOCK_GAIERROR(L, err  ) lsock_error(L, err,         (char * (*)(int)) &gai_strerror, NULL )
+#define LSOCK_STRFATAL(L, fname) lsock_fatal(L, LSOCK_ERRNO, (char * (*)(int)) &strerror,     fname)
 
 #ifdef _WIN32
 #	define INVALID_SOCKET(s) (INVALID_SOCKET == s)
@@ -119,14 +119,14 @@ typedef union
 **			- getsockname()
 **			- getpeername()
 **
+**			- getaddrinfo()
+**
 ** ALMOST:
 **			- send()/sendto()   -- (sendto())
 **			- recv()/recvfrom() -- (recvfrom())
 **
 ** TODO:
-**			- getaddrinfo()
 **			- getnameinfo() -- low priority?
-**			- addrinfo()    -- for getaddrinfo()
 **
 **			- ioctl()       -- unnecessary?
 **			- getsockopt()
@@ -501,6 +501,96 @@ lsock_linger(lua_State * const L)
 	(void) LSOCK_NEWLINGER(L);
 
 	return 1;
+}
+
+/* }}} */
+
+/* {{{ lsock_getaddrinfo() */
+
+static int
+lsock_getaddrinfo(lua_State * const L)
+{
+	int ret;
+	int i;
+
+	struct addrinfo hints, * info, * p;
+
+	/* node and service both cannot be NULL, getaddrinfo() will spout EAI_NONAME */
+	const char * const nname = lua_isnil(L, 1) ? NULL : luaL_checkstring(L, 1);
+	const char * const sname = lua_isnil(L, 2) ? NULL : luaL_checkstring(L, 2);
+
+	BZERO(&hints, sizeof(struct addrinfo));
+
+	if (!lua_isnil(L, 3))
+	{
+		luaL_checktype(L, 3, LUA_TTABLE); /* getaddrinfo('www.google.com', 'http', { ... }) */
+
+		lua_getfield(L, 3, "ai_flags");
+
+		if (!lua_isnil(L, -1))
+			hints.ai_flags = lua_tonumber(L, -1);
+
+		lua_pop(L, 1);
+
+		lua_getfield(L, 3, "ai_family");
+
+		if (!lua_isnil(L, -1))
+			hints.ai_family = lua_tonumber(L, -1);
+
+		lua_pop(L, 1);
+
+		lua_getfield(L, 3, "ai_socktype");
+
+		if (!lua_isnil(L, -1))
+			hints.ai_socktype = lua_tonumber(L, -1);
+
+		lua_pop(L, 1);
+
+		lua_getfield(L, 3, "ai_protocol");
+
+		if (!lua_isnil(L, -1))
+			hints.ai_protocol = lua_tonumber(L, -1);
+
+		lua_pop(L, 1);
+	}
+
+	info = NULL;
+
+	ret = getaddrinfo(nname, sname, &hints, &info);
+
+	if (0 != ret)
+		return LSOCK_GAIERROR(L, ret);
+
+	ret = 1; /* to reflect how many returns */
+
+	lua_newtable(L);
+
+	i = 1;
+
+	for (p = info; p != NULL; p = p->ai_next)
+	{
+		LSockAddr * tmp = NULL;
+
+		lua_pushnumber(L, i);
+
+		tmp = LSOCK_NEWSOCKADDR(L);
+
+		memcpy(tmp, p->ai_addr, p->ai_addrlen);
+
+		lua_settable(L, -3); /* newtable[1] = sockaddr userdata */
+
+		i++;
+	}
+
+	if (NULL != info->ai_canonname)
+	{
+		lua_pushstring(L, info->ai_canonname);
+		ret++;
+	}
+
+	freeaddrinfo(info);
+
+	return ret;
 }
 
 /* }}} */
@@ -1298,6 +1388,7 @@ static const luaL_Reg lsocklib[] =
 	LUA_REG(blocking),
 	LUA_REG(connect),
 	LUA_REG(gai_strerror),
+	LUA_REG(getaddrinfo),
 	LUA_REG(getfd),
 	LUA_REG(getfh),
 	LUA_REG(getpeername),
