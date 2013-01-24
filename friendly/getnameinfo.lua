@@ -1,14 +1,20 @@
-local basename    = (...):match('^[^.]*')
-local core        = require(basename .. '.core')
-local getnameinfo = core.getnameinfo
-local sockaddr    = core.sockaddr
+local basename      = (...):match('^[^.]*')
+local core          = require(basename .. '.core')
+local getnameinfo   = core.getnameinfo
+local pack_sockaddr = core.pack_sockaddr
 
 local tunp = table.unpack
 local band = bit32.band
 
--- getnameinfo('INADDR_ANY_INIT', 'NI_NUMERICHOST') -> getnameinfo(sockaddr 'INADDR_ANY_INIT', NI_NUMERICHOST)
 core.getnameinfo =
 	function (sa, flags)
+		sa    = core[sa] or sa
+		flags = flags    or 0
+
+		if type(sa) == 'table' then
+			sa = pack_sockaddr(sa)
+		end
+
 		local tmp = type(flags)
 
 		if tmp == 'table' then
@@ -21,7 +27,7 @@ core.getnameinfo =
 			flags = core[flags] or flags
 		end
 
-		return getnameinfo(sa, flags or 0)
+		return getnameinfo(sa, flags)
 	end
 
 return true

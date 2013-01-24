@@ -7,8 +7,12 @@ local band = bit32.band
 
 -- getaddrinfo { node = 'www.google.com', service = 'http', ai_family = 'AF_INET', ai_flags = { 'AI_CANONNAME' } }
 core.getaddrinfo =
-	function (hints)
-		local node, service = hints.node, hints.service
+	function (node, service, hints)
+		hints = hints or {}
+
+		for k, v in pairs(hints) do
+			hints[k] = core[v] or v
+		end
 
 		if type(hints.ai_flags) == 'table' then
 			for k, v in pairs(hints.ai_flags) do

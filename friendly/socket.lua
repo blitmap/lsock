@@ -5,7 +5,12 @@ local socket   = core.socket
 -- socket('AF_UNIX', 'SOCK_STREAM') -> file handle userdata
 core.socket =
 	function (domain, socktype, protocol)
-		return socket(core[domain] or domain, core[socktype] or socktype, protocol or 0)
+
+		domain   = core[domain  ] or domain
+		socktype = core[socktype] or socktype
+		protocol = core[protocol] or 0
+
+		return socket(domain, socktype, protocol)
 	end
 
 return true
