@@ -20,6 +20,7 @@
 #	include <sys/socket.h>
 #	include <netdb.h>
 #	include <netinet/in.h>
+#	include <net/if.h>
 #	include <sys/types.h>
 #	include <sys/un.h>
 #	include <string.h>
@@ -1174,6 +1175,120 @@ lsock_close(lua_State * L)
 
 /* }}} */
 
+/* {{{ lsock_getsockopt() */
+
+static int
+lsock_getsockopt(lua_State * L)
+{
+	lsocket s = LSOCK_CHECKSOCKET(L, 1);
+	int level = luaL_checknumber(L, 2);
+	int name  = luaL_checknumber(L, 3);
+
+	if (SOL_SOCKET != level)
+	{
+		lua_pushnil(L);
+		lua_pushstring(L, "currently level (arg 2) may only be SOL_SOCKET");
+		return 2;
+	}
+
+	switch (level)
+	{
+		/* booleans */
+		case SO_ACCEPTCONN:
+		case SO_BROADCAST:
+		case SO_REUSEADDR:
+		case SO_KEEPALIVE:
+		case SO_OOBINLINE:
+		case SO_DONTROUTE:
+		case SO_TIMESTAMP:
+		case SO_NO_CHECK:
+		case SO_DEBUG:
+			{
+				int opt = 0;
+				socklen_t sz = sizeof(opt);
+
+				if (SOCKFAIL(getsockopt(s, level, name, &opt, &sz)))
+					goto getsockopt_failure;
+
+				lua_pushnumber(L, opt);
+			}
+			break;
+
+		/* numbers */
+		case SO_RCVLOWAT:
+		case SO_RCVTIMEO:
+		case SO_SNDLOWAT:
+		case SO_SNDTIMEO:
+		case SO_PRIORITY:
+		case SO_PROTOCOL:
+		case SO_DOMAIN:
+		case SO_SNDBUF:
+		case SO_RCVBUF:
+		case SO_ERROR:
+		case SO_TYPE:
+			{
+				int opt = 0;
+				socklen_t sz = sizeof(opt);
+
+				if (SOCKFAIL(getsockopt(s, level, name, &opt, &sz)))
+					goto getsockopt_failure;
+
+				lua_pushboolean(L, opt);
+			}
+			break;
+
+		/* linger */
+		case SO_LINGER:
+			{
+				struct linger l;
+				socklen_t sz = sizeof(l);
+
+				BZERO(&l, sz);
+
+				if (SOCKFAIL(getsockopt(s, level, name, &l, &sz)))
+					goto getsockopt_failure;
+
+				linger_to_table(L, &l);
+			}
+			break;
+
+		case SO_BINDTODEVICE:
+			{
+				char buf[IFNAMSIZ + 1]; /* +1 for safety (this is like ~17 bytes anyway) */
+				socklen_t sz = sizeof(buf);
+
+				BZERO(buf, sizeof(buf));
+
+				if (SOCKFAIL(getsockopt(s, level, name, buf, &sz)))
+					goto getsockopt_failure;
+
+				lua_pushlstring(L, buf, sz);
+			}
+			break;
+
+		default:
+			{
+				char buf[1024];
+				socklen_t sz = sizeof(buf);
+
+				BZERO(buf, sz);
+
+				if (SOCKFAIL(getsockopt(s, level, name, buf, &sz)))
+					goto getsockopt_failure;
+
+				lua_pushlstring(L, buf, sz);
+			}
+			break;
+
+getsockopt_failure:
+		return LSOCK_STRERROR(L, NULL);
+	}
+
+	return 1;
+}
+
+/* }}} */
+
 /* }}} */
 
 /* {{{ lsock_getaddrinfo() */
@@ -1563,6 +1678,7 @@ static luaL_Reg lsocklib[] =
 	LUA_REG(getpeername),
 	LUA_REG(getnameinfo),
 	LUA_REG(getsockname),
+	LUA_REG(getsockopt),
 	LUA_REG(getstream),
 	LUA_REG(htons),
 	LUA_REG(ntohs),
@@ -1733,6 +1849,30 @@ luaopen_lsock_core(lua_State * L)
 	LSOCK_CONST(SHUT_RD  );
 	LSOCK_CONST(SHUT_RDWR);
 	LSOCK_CONST(SHUT_WR  );
+
+	/* getsockopt()/setsockopt() constants */
+	LSOCK_CONST(SOL_SOCKET     );
+	LSOCK_CONST(SO_TYPE        );
+	LSOCK_CONST(SO_DEBUG       );
+	LSOCK_CONST(SO_ACCEPTCONN  );
+	LSOCK_CONST(SO_REUSEADDR   );
+	LSOCK_CONST(SO_KEEPALIVE   );
+	LSOCK_CONST(SO_LINGER      );
+	LSOCK_CONST(SO_OOBINLINE   );
+	LSOCK_CONST(SO_SNDBUF      );
+	LSOCK_CONST(SO_RCVBUF      );
+	LSOCK_CONST(SO_ERROR       );
+	LSOCK_CONST(SO_DONTROUTE   );
+	LSOCK_CONST(SO_RCVLOWAT    );
+	LSOCK_CONST(SO_RCVTIMEO    );
+	LSOCK_CONST(SO_SNDLOWAT    );
+	LSOCK_CONST(SO_SNDTIMEO    );
+	LSOCK_CONST(SO_TIMESTAMP   );
+	LSOCK_CONST(SO_PROTOCOL    );
+	LSOCK_CONST(SO_PRIORITY    );
+	LSOCK_CONST(SO_DOMAIN      );
+	LSOCK_CONST(SO_BROADCAST   );
+	LSOCK_CONST(SO_BINDTODEVICE);
 
 #undef LSOCK_CONST
 

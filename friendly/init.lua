@@ -2,7 +2,7 @@ local basename = (...):match('^[^.]*')
 local core     = require(basename .. '.core')
 
 -- anything that needs more complex friendly setup gets loaded here
-for _, v in pairs({ 'bind', 'connect', 'getaddrinfo', 'getnameinfo', 'select', 'socket', 'shutdown' }) do
+for _, v in pairs({ 'bind', 'connect', 'getaddrinfo', 'getsockopt', 'getnameinfo', 'select', 'socket', 'shutdown' }) do
 	require(... .. '.' .. v)
 end
 
