@@ -1,5 +1,5 @@
-/* compile: gcc -o core.{so,c} -shared -fPIC -pedantic -ansi -std=c89 -W -Wall -llua -lm -ldl -flto -fstack-protector-all -O1 -g -nostdlib */
-/* release: gcc -o core.{so,c} -shared -fPIC -pedantic -ansi -std=c89 -W -Wall -llua -lm -ldl -flto -fstack-protector-all -Os -s -nostdlib */
+/* compile: gcc -o core.{so,c} -shared -fPIC -pedantic -ansi -std=c89 -W -Wall -llua -lm -ldl -flto -fstack-protector-all -O1 -g */
+/* release: gcc -o core.{so,c} -shared -fPIC -pedantic -ansi -std=c89 -W -Wall -llua -lm -ldl -flto -fstack-protector-all -Os -s */
 
 #ifndef _POSIX_SOURCE
 #	define _POSIX_SOURCE
@@ -21,6 +21,8 @@
 #	include <sys/socket.h>
 #	include <netdb.h>
 #	include <netinet/in.h>
+#	include <netinet/tcp.h>
+#	include <netinet/udp.h>
 #	include <net/if.h>
 #	include <sys/types.h>
 #	include <sys/un.h>
@@ -40,6 +42,10 @@
 
 #define NUL '\0'
 #define BZERO(buf, sz) memset(buf, NUL, sz)
+
+#define UNIX_PATH_MAX sizeof(((struct sockaddr_un *) NULL)->sun_path)
+
+#define SO_REUSEPORT 15 /* as per instruction in asm-generic/socket.h */
 
 #define LSOCK_FDOPEN_MODE "r+b"
 
@@ -513,7 +519,7 @@ invalid_sockaddr:
 			lua_pushnumber(L, lsa->un.sun_family);
 			lua_setfield(L, -2, "sun_family");
 
-			lua_pushlstring(L, (char *) &lsa->un.sun_path, sizeof(((struct sockaddr_un *) NULL)->sun_path));
+			lua_pushlstring(L, (char *) &lsa->un.sun_path, UNIX_PATH_MAX);
 			lua_setfield(L, -2, "sun_path");
 
 			break;
@@ -596,7 +602,7 @@ table_to_sockaddr(lua_State * L, int index)
 					else
 					{
 						dst = &lsa.un.sun_path;
-						sz  = MAX(sizeof(((struct sockaddr_un *) NULL)->sun_path), sz); /* should be MAX(108, l) */
+						sz  = MAX(UNIX_PATH_MAX, sz); /* should be MAX(108, l) */
 					}
 
 					memcpy(dst, src, sz);
@@ -1179,94 +1185,208 @@ lsock_close(lua_State * L)
 
 /* {{{ sockopt() */
 
+enum { SOCKOPT_BOOLEAN, SOCKOPT_NUMBER, SOCKOPT_LINGER, SOCKOPT_IFNAM, SOCKOPT_INADDR, SOCKOPT_IN6ADDR };
+
 static int
 sockopt(lua_State * L)
 {
 	lsocket s = LSOCK_CHECKSOCKET(L, 1);
 	int level = luaL_checknumber(L, 2);
-	int oname  = luaL_checknumber(L, 3);
+	int option = luaL_checknumber(L, 3);
 
-	int get = lua_isnone(L, 4) ? 1 : 0;
+	int get = lua_isnone(L, 4);
+	int opt_type = -1;
 
-	if (SOL_SOCKET != level)
+	if (SOL_SOCKET == level)
+	{
+		switch (option)
+		{
+			case SO_ACCEPTCONN:
+			case SO_BROADCAST:
+			case SO_REUSEADDR:
+			case SO_REUSEPORT:
+			case SO_KEEPALIVE:
+			case SO_OOBINLINE:
+			case SO_DONTROUTE:
+			case SO_TIMESTAMP:
+			case SO_BSDCOMPAT:
+			case SO_NO_CHECK:
+			case SO_DEBUG:
+			case SO_MARK:
+				opt_type = SOCKOPT_BOOLEAN;
+				break;
+
+			case SO_RCVBUFFORCE:
+			case SO_SNDBUFFORCE:
+			case SO_RCVLOWAT:
+			case SO_RCVTIMEO:
+			case SO_SNDLOWAT:
+			case SO_SNDTIMEO:
+			case SO_PRIORITY:
+			case SO_PROTOCOL:
+			case SO_PEEK_OFF:
+			case SO_DOMAIN:
+			case SO_SNDBUF:
+			case SO_RCVBUF:
+			case SO_ERROR:
+			case SO_TYPE:
+				opt_type = SOCKOPT_NUMBER;
+				break;
+
+			case SO_LINGER:
+				opt_type = SOCKOPT_LINGER;
+				break;
+
+			case SO_BINDTODEVICE:
+				opt_type = SOCKOPT_IFNAM;
+				break;
+		}
+	}
+	else if (SOL_TCP == level)
+	{
+		switch (option)
+		{
+			case TCP_MAXSEG:
+			case TCP_KEEPIDLE:
+			case TCP_KEEPINTVL:
+			case TCP_KEEPCNT:
+			case TCP_SYNCNT:
+			case TCP_LINGER2:
+			case TCP_DEFER_ACCEPT: /* NOT A BOOLEAN, number is seconds to wait for data or drop */
+			case TCP_WINDOW_CLAMP:
+				opt_type = SOCKOPT_NUMBER;
+				break;
+
+			case TCP_NODELAY:
+			case TCP_CORK:
+				opt_type = SOCKOPT_BOOLEAN;
+				break;
+		
+			/* maybe handle TCP_INFO at some point */
+		}
+	}
+	else if (SOL_UDP == level)
+	{
+		switch (option)
+		{
+			case UDP_CORK:
+#ifdef _WIN32
+			case UDP_CHECKSUM_COVERAGE:
+			case UDP_NOCHECKSUM:
+#endif
+				opt_type = SOCKOPT_BOOLEAN;
+				break;
+		}
+	}
+	else if (SOL_IP == level)
+	{
+		switch (option)
+		{
+			case IP_TTL:
+			case IP_TOS:
+			case IP_RECVTTL:
+			case IP_RECVTOS:
+			case IP_MTU_DISCOVER:
+			case IP_MULTICAST_TTL:
+				opt_type = SOCKOPT_NUMBER;
+				break;
+
+			case IP_HDRINCL:
+			case IP_PKTINFO:
+			case IP_RECVERR:
+			case IP_RECVOPTS:
+			case IP_RETOPTS:
+			case IP_ROUTER_ALERT:
+			case IP_MULTICAST_LOOP:
+				opt_type = SOCKOPT_BOOLEAN;
+				break;
+
+			case IP_MULTICAST_IF:
+				opt_type = SOCKOPT_INADDR;
+				break;
+		}
+	}
+	else if (SOL_IPV6 == level)
+	{
+		switch (option)
+		{
+			case IPV6_DSTOPTS:
+			case IPV6_HOPLIMIT:
+			case IPV6_HOPOPTS:
+			case IPV6_NEXTHOP:
+			case IPV6_ROUTER_ALERT:
+			case IPV6_MULTICAST_LOOP:
+				opt_type = SOCKOPT_BOOLEAN;
+				break;
+
+			case IPV6_ADDRFORM:
+			case IPV6_AUTHHDR:
+			case IPV6_CHECKSUM:
+			case IPV6_MULTICAST_HOPS:
+			case IPV6_PKTINFO:
+			case IPV6_UNICAST_HOPS:
+				opt_type = SOCKOPT_NUMBER;
+				break;
+		}
+	}
+	else
 	{
 		lua_pushnil(L);
-		lua_pushliteral(L, "currently `level' (arg 2) may only be SOL_SOCKET");
+		lua_pushliteral(L, "sockopt level not supported");
+
 		return 2;
 	}
 
-	switch (oname)
+	switch (opt_type)
 	{
-		/* booleans */
-		case SO_ACCEPTCONN:
-		case SO_BROADCAST:
-		case SO_REUSEADDR:
-		case SO_KEEPALIVE:
-		case SO_OOBINLINE:
-		case SO_DONTROUTE:
-		case SO_TIMESTAMP:
-		case SO_NO_CHECK:
-		case SO_DEBUG:
+		case SOCKOPT_BOOLEAN:
 			{
-				int opt = 0;
-				socklen_t sz = sizeof(opt);
+				int value = 0;
+				socklen_t sz = sizeof(value);
 
 				if (get)
 				{
-					if (SOCKFAIL(getsockopt(s, level, oname, &opt, &sz)))
+					if (SOCKFAIL(getsockopt(s, level, option, &value, &sz)))
 						goto sockopt_failure;
 
-					lua_pushboolean(L, opt);
+					lua_pushboolean(L, value);
 				}
 				else
 				{
 					luaL_checktype(L, 4, LUA_TBOOLEAN);
 
-					opt = lua_toboolean(L, 4);
+					value = lua_toboolean(L, 4);
 
-					if (SOCKFAIL(setsockopt(s, level, oname, &opt, sz)))
+					if (SOCKFAIL(setsockopt(s, level, option, &value, sz)))
 						goto sockopt_failure;
 				}
 			}
 			break;
 
-		/* numbers */
-		case SO_RCVBUFFORCE:
-		case SO_SNDBUFFORCE:
-		case SO_RCVLOWAT:
-		case SO_RCVTIMEO:
-		case SO_SNDLOWAT:
-		case SO_SNDTIMEO:
-		case SO_PRIORITY:
-		case SO_PROTOCOL:
-		case SO_DOMAIN:
-		case SO_SNDBUF:
-		case SO_RCVBUF:
-		case SO_ERROR:
-		case SO_TYPE:
+		case SOCKOPT_NUMBER:
 			{
-				int opt = 0;
-				socklen_t sz = sizeof(opt);
+				int value = 0;
+				socklen_t sz = sizeof(value);
 
 				if (get)
 				{
-					if (SOCKFAIL(getsockopt(s, level, oname, &opt, &sz)))
+					if (SOCKFAIL(getsockopt(s, level, option, &value, &sz)))
 						goto sockopt_failure;
 
-					lua_pushnumber(L, opt);
+					lua_pushnumber(L, value);
 				}
 				else
 				{
-					opt = luaL_checknumber(L, 4);
+					value = luaL_checknumber(L, 4);
 
-					if (SOCKFAIL(setsockopt(s, level, oname, &opt, sz)))
+					if (SOCKFAIL(setsockopt(s, level, option, &value, sz)))
 						goto sockopt_failure;
 				}
 			}
 			break;
 
-		/* linger */
-		case SO_LINGER:
+		case SOCKOPT_LINGER:
+			opt_type = SOCKOPT_LINGER;
 			{
 				if (get)
 				{
@@ -1275,7 +1395,7 @@ sockopt(lua_State * L)
 
 					BZERO(&l, sz);
 
-					if (SOCKFAIL(getsockopt(s, level, oname, &l, &sz)))
+					if (SOCKFAIL(getsockopt(s, level, option, &l, &sz)))
 						goto sockopt_failure;
 
 					linger_to_table(L, &l);
@@ -1290,13 +1410,14 @@ sockopt(lua_State * L)
 					l  = table_to_linger(L, 4);
 					sz = lua_rawlen(L, -1);
 
-					if (SOCKFAIL(setsockopt(s, level, oname, l, sz)))
+					if (SOCKFAIL(setsockopt(s, level, option, l, sz)))
 						goto sockopt_failure;
 				}
 			}
 			break;
 
-		case SO_BINDTODEVICE:
+		case SOCKOPT_IFNAM:
+			opt_type = SOCKOPT_IFNAM;
 			{
 				if (get)
 				{
@@ -1305,7 +1426,7 @@ sockopt(lua_State * L)
 
 					BZERO(buf, sizeof(buf));
 
-					if (SOCKFAIL(getsockopt(s, level, oname, buf, &sz)))
+					if (SOCKFAIL(getsockopt(s, level, option, buf, &sz)))
 						goto sockopt_failure;
 
 					lua_pushlstring(L, buf, sz);
@@ -1314,9 +1435,9 @@ sockopt(lua_State * L)
 				{
 					socklen_t sz = 0;
 
-					const char * opt = luaL_checklstring(L, 4, (size_t *) &sz);
+					const char * value = luaL_checklstring(L, 4, (size_t *) &sz);
 
-					if (SOCKFAIL(setsockopt(s, level, oname, opt, sz)))
+					if (SOCKFAIL(setsockopt(s, level, option, value, sz)))
 						goto sockopt_failure;
 				}
 			}
@@ -1324,7 +1445,7 @@ sockopt(lua_State * L)
 
 		default:
 			lua_pushnil(L);
-			lua_pushfstring(L, "could not %s socket option", lua_isnone(L, 4) ? "get" : "set");
+			lua_pushfstring(L, "could not %s socket option", get ? "get" : "set");
 
 			return 2;
 
@@ -1357,6 +1478,8 @@ lsock_getsockopt(lua_State * L)
 static int
 lsock_setsockopt(lua_State * L)
 {
+	luaL_checkany(L, 4);
+
 	return sockopt(L);
 }
 
@@ -1839,11 +1962,37 @@ luaopen_lsock_core(lua_State * L)
 	LSOCK_CONST(SOCK_STREAM   );
 
 	/* protocol constants */
-	LSOCK_CONST(IPPROTO_ICMP  );
-	LSOCK_CONST(IPPROTO_ICMPV6);
-	LSOCK_CONST(IPPROTO_IGMP  );
-	LSOCK_CONST(IPPROTO_TCP   );
-	LSOCK_CONST(IPPROTO_UDP   );
+	LSOCK_CONST(IPPROTO_IP      );
+	LSOCK_CONST(IPPROTO_HOPOPTS );
+	LSOCK_CONST(IPPROTO_ICMP    );
+	LSOCK_CONST(IPPROTO_IGMP    );
+	LSOCK_CONST(IPPROTO_IPIP    );
+	LSOCK_CONST(IPPROTO_TCP     );
+	LSOCK_CONST(IPPROTO_EGP     );
+	LSOCK_CONST(IPPROTO_PUP     );
+	LSOCK_CONST(IPPROTO_UDP     );
+	LSOCK_CONST(IPPROTO_IDP     );
+	LSOCK_CONST(IPPROTO_TP      );
+	LSOCK_CONST(IPPROTO_DCCP    );
+	LSOCK_CONST(IPPROTO_IPV6    );
+	LSOCK_CONST(IPPROTO_ROUTING );
+	LSOCK_CONST(IPPROTO_FRAGMENT);
+	LSOCK_CONST(IPPROTO_RSVP    );
+	LSOCK_CONST(IPPROTO_GRE     );
+	LSOCK_CONST(IPPROTO_ESP     );
+	LSOCK_CONST(IPPROTO_AH      );
+	LSOCK_CONST(IPPROTO_ICMPV6  );
+	LSOCK_CONST(IPPROTO_NONE    );
+	LSOCK_CONST(IPPROTO_DSTOPTS );
+	LSOCK_CONST(IPPROTO_MTP     );
+	LSOCK_CONST(IPPROTO_ENCAP   );
+	LSOCK_CONST(IPPROTO_PIM     );
+	LSOCK_CONST(IPPROTO_COMP    );
+	LSOCK_CONST(IPPROTO_SCTP    );
+	LSOCK_CONST(IPPROTO_UDPLITE );
+	LSOCK_CONST(IPPROTO_RAW     );
+    LSOCK_CONST(IPPROTO_MAX     );
+
 
 	/* errno's, alphabetical */
 	LSOCK_CONST(EACCES         );
@@ -1925,30 +2074,79 @@ luaopen_lsock_core(lua_State * L)
 	LSOCK_CONST(SHUT_WR  );
 
 	/* getsockopt()/setsockopt() constants */
-	LSOCK_CONST(SOL_SOCKET     );
-	LSOCK_CONST(SO_TYPE        );
-	LSOCK_CONST(SO_DEBUG       );
-	LSOCK_CONST(SO_ACCEPTCONN  );
-	LSOCK_CONST(SO_REUSEADDR   );
-	LSOCK_CONST(SO_KEEPALIVE   );
-	LSOCK_CONST(SO_LINGER      );
-	LSOCK_CONST(SO_OOBINLINE   );
-	LSOCK_CONST(SO_SNDBUF      );
-	LSOCK_CONST(SO_RCVBUF      );
-	LSOCK_CONST(SO_ERROR       );
-	LSOCK_CONST(SO_DONTROUTE   );
-	LSOCK_CONST(SO_RCVLOWAT    );
-	LSOCK_CONST(SO_RCVTIMEO    );
-	LSOCK_CONST(SO_SNDLOWAT    );
-	LSOCK_CONST(SO_SNDTIMEO    );
-	LSOCK_CONST(SO_TIMESTAMP   );
-	LSOCK_CONST(SO_PROTOCOL    );
-	LSOCK_CONST(SO_PRIORITY    );
-	LSOCK_CONST(SO_DOMAIN      );
-	LSOCK_CONST(SO_BROADCAST   );
-	LSOCK_CONST(SO_BINDTODEVICE);
-	LSOCK_CONST(SO_RCVBUFFORCE );
-	LSOCK_CONST(SO_SNDBUFFORCE );
+	LSOCK_CONST(SOL_SOCKET                );
+	LSOCK_CONST(SOL_TCP                   );
+	LSOCK_CONST(SOL_UDP                   );
+	LSOCK_CONST(SOL_IP                    );
+	LSOCK_CONST(SOL_IPV6                  );
+	LSOCK_CONST(SO_TYPE                   );
+	LSOCK_CONST(SO_DEBUG                  );
+	LSOCK_CONST(SO_ACCEPTCONN             );
+	LSOCK_CONST(SO_REUSEADDR              );
+	LSOCK_CONST(SO_REUSEPORT              );
+	LSOCK_CONST(SO_KEEPALIVE              );
+	LSOCK_CONST(SO_LINGER                 );
+	LSOCK_CONST(SO_OOBINLINE              );
+	LSOCK_CONST(SO_SNDBUF                 );
+	LSOCK_CONST(SO_RCVBUF                 );
+	LSOCK_CONST(SO_ERROR                  );
+	LSOCK_CONST(SO_DONTROUTE              );
+	LSOCK_CONST(SO_RCVLOWAT               );
+	LSOCK_CONST(SO_RCVTIMEO               );
+	LSOCK_CONST(SO_SNDLOWAT               );
+	LSOCK_CONST(SO_SNDTIMEO               );
+	LSOCK_CONST(SO_TIMESTAMP              );
+	LSOCK_CONST(SO_PROTOCOL               );
+	LSOCK_CONST(SO_PRIORITY               );
+	LSOCK_CONST(SO_DOMAIN                 );
+	LSOCK_CONST(SO_BROADCAST              );
+	LSOCK_CONST(SO_BINDTODEVICE           );
+	LSOCK_CONST(SO_RCVBUFFORCE            );
+	LSOCK_CONST(SO_SNDBUFFORCE            );
+	LSOCK_CONST(SO_MARK                   );
+	LSOCK_CONST(SO_BSDCOMPAT              );
+	LSOCK_CONST(SO_PEEK_OFF               );
+	LSOCK_CONST(TCP_MAXSEG                );
+	LSOCK_CONST(TCP_KEEPIDLE              );
+	LSOCK_CONST(TCP_KEEPINTVL             );
+	LSOCK_CONST(TCP_KEEPCNT               );
+	LSOCK_CONST(TCP_SYNCNT                );
+	LSOCK_CONST(TCP_LINGER2               );
+	LSOCK_CONST(TCP_DEFER_ACCEPT          );
+	LSOCK_CONST(TCP_WINDOW_CLAMP          );
+	LSOCK_CONST(TCP_NODELAY               );
+	LSOCK_CONST(TCP_CORK                  );
+	LSOCK_CONST(UDP_CORK                  );
+#ifdef _WIN32
+	LSOCK_CONST(UDP_CHECKSUM_COVERAGE     );
+	LSOCK_CONST(UDP_NOCHECKSUM            );
+#endif
+	LSOCK_CONST(IP_TTL                    );
+	LSOCK_CONST(IP_TOS                    );
+	LSOCK_CONST(IP_RECVTTL                );
+	LSOCK_CONST(IP_RECVTOS                );
+	LSOCK_CONST(IP_MTU_DISCOVER           );
+	LSOCK_CONST(IP_MULTICAST_TTL          );
+	LSOCK_CONST(IP_HDRINCL                );
+	LSOCK_CONST(IP_PKTINFO                );
+	LSOCK_CONST(IP_RECVERR                );
+	LSOCK_CONST(IP_RECVOPTS               );
+	LSOCK_CONST(IP_RETOPTS                );
+	LSOCK_CONST(IP_ROUTER_ALERT           );
+	LSOCK_CONST(IP_MULTICAST_LOOP         );
+	LSOCK_CONST(IP_MULTICAST_IF           );
+	LSOCK_CONST(IPV6_DSTOPTS              );
+	LSOCK_CONST(IPV6_HOPLIMIT             );
+	LSOCK_CONST(IPV6_HOPOPTS              );
+	LSOCK_CONST(IPV6_NEXTHOP              );
+	LSOCK_CONST(IPV6_ROUTER_ALERT         );
+	LSOCK_CONST(IPV6_MULTICAST_LOOP       );
+	LSOCK_CONST(IPV6_ADDRFORM             );
+	LSOCK_CONST(IPV6_AUTHHDR              );
+	LSOCK_CONST(IPV6_CHECKSUM             );
+	LSOCK_CONST(IPV6_MULTICAST_HOPS       );
+	LSOCK_CONST(IPV6_PKTINFO              );
+	LSOCK_CONST(IPV6_UNICAST_HOPS         );
 
 #undef LSOCK_CONST
 
