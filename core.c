@@ -768,7 +768,7 @@ lsock_ntohs(lua_State * L)
 	if (sizeof(uint16_t) != l) /* obviously 2 bytes... */
 	{
 		lua_pushnil(L);
-		lua_pushstring(L, "string length must be sizeof(uint16_t) (2 bytes)");
+		lua_pushliteral(L, "string length must be sizeof(uint16_t) (2 bytes)");
 		return 2;
 	}
 
@@ -817,7 +817,7 @@ lsock_ntohl(lua_State * L)
 	if (sizeof(uint32_t) != l) /* 4 bytes */
 	{
 		lua_pushnil(L);
-		lua_pushstring(L, "string length must be sizeof(uint32_t) (4 bytes)");
+		lua_pushliteral(L, "string length must be sizeof(uint32_t) (4 bytes)");
 		return 2;
 	}
 
@@ -1191,7 +1191,7 @@ sockopt(lua_State * L)
 	if (SOL_SOCKET != level)
 	{
 		lua_pushnil(L);
-		lua_pushstring(L, "currently `level' (arg 2) may only be SOL_SOCKET");
+		lua_pushliteral(L, "currently `level' (arg 2) may only be SOL_SOCKET");
 		return 2;
 	}
 
