@@ -1,4 +1,5 @@
-/* compile: gcc -o core.{so,c} -shared -fPIC -W -Wall -O2 -g -llua -lm -ldl -pedantic -ansi -std=c89 -flto -fstack-protector-all */
+/* compile: gcc -o core.{so,c} -shared -fPIC -pedantic -ansi -std=c89 -W -Wall -llua -lm -ldl -flto -fstack-protector-all -O1 -g -nostdlib */
+/* release: gcc -o core.{so,c} -shared -fPIC -pedantic -ansi -std=c89 -W -Wall -llua -lm -ldl -flto -fstack-protector-all -Os -s -nostdlib */
 
 #ifndef _POSIX_SOURCE
 #	define _POSIX_SOURCE
@@ -99,6 +100,9 @@ typedef union
 **			- listen()
 **			- shutdown()
 **
+**			- getsockopt() -- only SOL_SOCKET options supported right now
+**			- setsockopt()
+**
 **			- select() -- I might make an fd_set constructor + helper methods later on
 **
 **			- strerror()
@@ -126,8 +130,6 @@ typedef union
 **			- recvmsg() -- maybe recv()+recvmsg() can be wrappers?
 **
 **			- ioctl()       -- unnecessary?
-**			- getsockopt()
-**			- setsockopt()
 **
 **			- htond()       -- only on Windows
 **			- htonf()       -- only on Windows
@@ -1175,23 +1177,25 @@ lsock_close(lua_State * L)
 
 /* }}} */
 
-/* {{{ lsock_getsockopt() */
+/* {{{ sockopt() */
 
 static int
-lsock_getsockopt(lua_State * L)
+sockopt(lua_State * L)
 {
 	lsocket s = LSOCK_CHECKSOCKET(L, 1);
 	int level = luaL_checknumber(L, 2);
-	int name  = luaL_checknumber(L, 3);
+	int oname  = luaL_checknumber(L, 3);
+
+	int get = lua_isnone(L, 4) ? 1 : 0;
 
 	if (SOL_SOCKET != level)
 	{
 		lua_pushnil(L);
-		lua_pushstring(L, "currently level (arg 2) may only be SOL_SOCKET");
+		lua_pushstring(L, "currently `level' (arg 2) may only be SOL_SOCKET");
 		return 2;
 	}
 
-	switch (level)
+	switch (oname)
 	{
 		/* booleans */
 		case SO_ACCEPTCONN:
@@ -1207,14 +1211,28 @@ lsock_getsockopt(lua_State * L)
 				int opt = 0;
 				socklen_t sz = sizeof(opt);
 
-				if (SOCKFAIL(getsockopt(s, level, name, &opt, &sz)))
-					goto getsockopt_failure;
+				if (get)
+				{
+					if (SOCKFAIL(getsockopt(s, level, oname, &opt, &sz)))
+						goto sockopt_failure;
 
-				lua_pushnumber(L, opt);
+					lua_pushboolean(L, opt);
+				}
+				else
+				{
+					luaL_checktype(L, 4, LUA_TBOOLEAN);
+
+					opt = lua_toboolean(L, 4);
+
+					if (SOCKFAIL(setsockopt(s, level, oname, &opt, sz)))
+						goto sockopt_failure;
+				}
 			}
 			break;
 
 		/* numbers */
+		case SO_RCVBUFFORCE:
+		case SO_SNDBUFFORCE:
 		case SO_RCVLOWAT:
 		case SO_RCVTIMEO:
 		case SO_SNDLOWAT:
@@ -1230,61 +1248,116 @@ lsock_getsockopt(lua_State * L)
 				int opt = 0;
 				socklen_t sz = sizeof(opt);
 
-				if (SOCKFAIL(getsockopt(s, level, name, &opt, &sz)))
-					goto getsockopt_failure;
+				if (get)
+				{
+					if (SOCKFAIL(getsockopt(s, level, oname, &opt, &sz)))
+						goto sockopt_failure;
 
-				lua_pushboolean(L, opt);
+					lua_pushnumber(L, opt);
+				}
+				else
+				{
+					opt = luaL_checknumber(L, 4);
+
+					if (SOCKFAIL(setsockopt(s, level, oname, &opt, sz)))
+						goto sockopt_failure;
+				}
 			}
 			break;
 
 		/* linger */
 		case SO_LINGER:
 			{
-				struct linger l;
-				socklen_t sz = sizeof(l);
+				if (get)
+				{
+					struct linger l;
+					socklen_t sz = sizeof(l);
 
-				BZERO(&l, sz);
+					BZERO(&l, sz);
 
-				if (SOCKFAIL(getsockopt(s, level, name, &l, &sz)))
-					goto getsockopt_failure;
+					if (SOCKFAIL(getsockopt(s, level, oname, &l, &sz)))
+						goto sockopt_failure;
 
-				linger_to_table(L, &l);
+					linger_to_table(L, &l);
+				}
+				else
+				{
+					struct linger * l = NULL; 
+					socklen_t sz = 0;
+
+					luaL_checktype(L, 4, LUA_TTABLE);
+
+					l  = table_to_linger(L, 4);
+					sz = lua_rawlen(L, -1);
+
+					if (SOCKFAIL(setsockopt(s, level, oname, l, sz)))
+						goto sockopt_failure;
+				}
 			}
 			break;
 
 		case SO_BINDTODEVICE:
 			{
-				char buf[IFNAMSIZ + 1]; /* +1 for safety (this is like ~17 bytes anyway) */
-				socklen_t sz = sizeof(buf);
+				if (get)
+				{
+					char buf[IFNAMSIZ + 1]; /* +1 for safety (this is like ~17 bytes anyway) */
+					socklen_t sz = sizeof(buf);
 
-				BZERO(buf, sizeof(buf));
+					BZERO(buf, sizeof(buf));
 
-				if (SOCKFAIL(getsockopt(s, level, name, buf, &sz)))
-					goto getsockopt_failure;
+					if (SOCKFAIL(getsockopt(s, level, oname, buf, &sz)))
+						goto sockopt_failure;
 
-				lua_pushlstring(L, buf, sz);
+					lua_pushlstring(L, buf, sz);
+				}
+				else
+				{
+					socklen_t sz = 0;
+
+					const char * opt = luaL_checklstring(L, 4, (size_t *) &sz);
+
+					if (SOCKFAIL(setsockopt(s, level, oname, opt, sz)))
+						goto sockopt_failure;
+				}
 			}
 			break;
 
 		default:
-			{
-				char buf[1024];
-				socklen_t sz = sizeof(buf);
+			lua_pushnil(L);
+			lua_pushfstring(L, "could not %s socket option", lua_isnone(L, 4) ? "get" : "set");
 
-				BZERO(buf, sz);
+			return 2;
 
-				if (SOCKFAIL(getsockopt(s, level, name, buf, &sz)))
-					goto getsockopt_failure;
-
-				lua_pushlstring(L, buf, sz);
-			}
-			break;
-
-getsockopt_failure:
+sockopt_failure:
 		return LSOCK_STRERROR(L, NULL);
 	}
 
-	return 1;
+	return get;
+}
+
+/* }}} */
+
+/* {{{ lsock_getsockopt() */
+
+static int
+lsock_getsockopt(lua_State * L)
+{
+	int n = lua_gettop(L);
+
+	if (n > 3)
+		lua_pop(L, n - 3);
+
+	return sockopt(L);
+}
+
+/* }}} */
+
+/* {{{ lsock_setsockopt() */
+
+static int
+lsock_setsockopt(lua_State * L)
+{
+	return sockopt(L);
 }
 
 /* }}} */
@@ -1694,6 +1767,7 @@ static luaL_Reg lsocklib[] =
 #endif
 	LUA_REG(send),
 	LUA_REG(sendto),
+	LUA_REG(setsockopt),
 	LUA_REG(shutdown),
 	LUA_REG(socket),
 #ifndef _WIN32
@@ -1873,6 +1947,8 @@ luaopen_lsock_core(lua_State * L)
 	LSOCK_CONST(SO_DOMAIN      );
 	LSOCK_CONST(SO_BROADCAST   );
 	LSOCK_CONST(SO_BINDTODEVICE);
+	LSOCK_CONST(SO_RCVBUFFORCE );
+	LSOCK_CONST(SO_SNDBUFFORCE );
 
 #undef LSOCK_CONST
 
