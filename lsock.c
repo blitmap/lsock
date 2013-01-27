@@ -103,7 +103,7 @@ typedef union
 **
 **			- socket()
 **			- bind()
-**			- blocking() -- for setting nonblocking mode
+**			- unblock() -- for setting nonblocking mode
 **			- connect()
 **			- listen()
 **			- shutdown()
@@ -115,10 +115,6 @@ typedef union
 **
 **			- strerror()
 **			- gai_strerror()
-**
-**			- sockaddr() -- for bind()/connect()/accept()/getaddrinfo()
-**			- linger()   -- for get/setsockopt()
-**			- timeval()  -- for get/setsockopt()
 **
 **			- sendfile()   -- only on Linux
 **			- socketpair() -- only on Linux
