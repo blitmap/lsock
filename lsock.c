@@ -1,5 +1,5 @@
-/* compile: gcc -o core.{so,c} -shared -fPIC -pedantic -ansi -std=c89 -W -Wall -llua -lm -ldl -flto -fstack-protector-all -O1 -g */
-/* release: gcc -o core.{so,c} -shared -fPIC -pedantic -ansi -std=c89 -W -Wall -llua -lm -ldl -flto -fstack-protector-all -Os -s */
+/* compile: gcc -o lsock.{so,c} -shared -fPIC -pedantic -ansi -std=c89 -W -Wall -llua -lm -ldl -flto -fstack-protector-all -O1 -g */
+/* release: gcc -o lsock.{so,c} -shared -fPIC -pedantic -ansi -std=c89 -W -Wall -llua -lm -ldl -flto -fstack-protector-all -Os -s */
 
 #ifndef _POSIX_SOURCE
 #	define _POSIX_SOURCE
@@ -108,7 +108,7 @@ typedef union
 **			- listen()
 **			- shutdown()
 **
-**			- getsockopt() -- only SOL_SOCKET options supported right now
+**			- getsockopt()
 **			- setsockopt()
 **
 **			- select() -- I might make an fd_set constructor + helper methods later on
@@ -1013,18 +1013,18 @@ lsock_recvfrom(lua_State * L)
 	char * buf;
 	luaL_Buffer B;
 
-	lsocket sock   = LSOCK_CHECKSOCKET(L, 1);
-	size_t  length = luaL_checknumber(L, 2);
+	lsocket s   = LSOCK_CHECKSOCKET(L, 1);
+	size_t  buflen = luaL_checknumber(L, 2);
 	int     flags  = luaL_checknumber(L, 3);
 
 	if (!lua_isnone(L, 4))
 		from = luaL_checklstring(L, 4, (size_t *) &from_len);
 
-	buf = luaL_buffinitsize(L, &B, length);
+	buf = luaL_buffinitsize(L, &B, buflen);
 
-	BZERO(buf, length); /* a must! */
+	BZERO(buf, buflen); /* a must! */
 
-	gotten = recvfrom(sock, buf, length, flags, (struct sockaddr *) from, &from_len);
+	gotten = recvfrom(s, buf, buflen, flags, (struct sockaddr *) from, &from_len);
 	
 	if (SOCKFAIL(gotten))
 		return LSOCK_STRERROR(L, NULL);
