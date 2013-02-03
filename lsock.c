@@ -57,9 +57,9 @@ typedef int    lsocket;
 
 #define LSOCK_NEWUDATA(L, sz) BZERO(lua_newuserdata(L, sz), sz)
 
-#define LSOCK_CHECKSTREAM(L, index) ((luaL_Stream *) luaL_checkudata(L, index, LUA_FILEHANDLE))
-#define LSOCK_CHECKSOCKET(L, index) stream_to_lsocket(L, LSOCK_CHECKSTREAM(L, index)->f)
-#define     LSOCK_CHECKFD(L, index) stream_to_fd(L, LSOCK_CHECKSTREAM(L, index)->f)
+#define   LSOCK_CHECKFH(L, index) ((luaL_Stream *) luaL_checkudata(L, index, LUA_FILEHANDLE))
+#define LSOCK_CHECKSOCK(L, index) file_to_sock(L, LSOCK_CHECKFH(L, index)->f)
+#define   LSOCK_CHECKFD(L, index) file_to_fd(L, LSOCK_CHECKFH(L, index)->f)
 
 #define LSOCK_STRERROR(L, fname) lsock_error(L, LSOCK_ERRNO, (char * (*)(int)) &strerror,     fname)
 #define LSOCK_GAIERROR(L, err  ) lsock_error(L, err,         (char * (*)(int)) &gai_strerror, NULL )
@@ -211,10 +211,10 @@ lsock_gai_strerror(lua_State * L)
 
 /* going to and from SOCKET and fd in Windows: _open_osfhandle()/_get_osfhandle() */
 
-/* {{{ stream_to_fd() */
+/* {{{ file_to_fd() */
 
 static int
-stream_to_fd(lua_State * L, FILE * stream)
+file_to_fd(lua_State * L, FILE * stream)
 {
 	int fd = -1;
 
@@ -236,10 +236,10 @@ stream_to_fd(lua_State * L, FILE * stream)
 
 /* }}} */
 
-/* {{{ fd_to_stream() */
+/* {{{ fd_to_file() */
 
 static FILE *
-fd_to_stream(lua_State * L, int fd)
+fd_to_file(lua_State * L, int fd)
 {
 	FILE * stream = NULL;
 
@@ -261,10 +261,10 @@ fd_to_stream(lua_State * L, int fd)
 
 /* }}} */
 
-/* {{{ lsocket_to_fd() */
+/* {{{ sock_to_fd() */
 
 static int
-lsocket_to_fd(lua_State * L, lsocket sock)
+sock_to_fd(lua_State * L, lsocket sock)
 {
 
 #ifdef _WIN32
@@ -286,10 +286,10 @@ lsocket_to_fd(lua_State * L, lsocket sock)
 
 /* }}} */
 
-/* {{{ fd_to_lsocket() */
+/* {{{ fd_to_sock() */
 
 static lsocket
-fd_to_lsocket(lua_State * L, int fd)
+fd_to_sock(lua_State * L, int fd)
 {
 
 #ifdef _WIN32
@@ -309,24 +309,24 @@ fd_to_lsocket(lua_State * L, int fd)
 
 /* }}} */
 
-/* {{{ stream_to_lsocket() */
+/* {{{ file_to_sock() */
 
 static lsocket
-stream_to_lsocket(lua_State * L, FILE * stream)
+file_to_sock(lua_State * L, FILE * stream)
 {
 	/* wheee shortness. */
-	return fd_to_lsocket(L, stream_to_fd(L, stream));
+	return fd_to_sock(L, file_to_fd(L, stream));
 }
 
 /* }}} */
 
-/* {{{ lsocket_to_stream() */
+/* {{{ sock_to_file() */
 
 static FILE *
-lsocket_to_stream(lua_State * L, lsocket sock)
+sock_to_file(lua_State * L, lsocket sock)
 {
 	/* \o/ \o| |o/ \o/ \o| |o/ \o/ */
-	return fd_to_stream(L, lsocket_to_fd(L, sock));
+	return fd_to_file(L, sock_to_fd(L, sock));
 }
 
 /* }}} */
@@ -695,18 +695,18 @@ lsock_unpack_sockaddr(lua_State * L)
 
 /* }}} */
 
-/* {{{ lsock_newstream(): based directly on: newprefile() & newfile() from Lua 5.2 sources */
+/* {{{ lsock_newfile(): based directly on: newprefile() & newfile() from Lua 5.2 sources */
 
 static int
 close_stream(lua_State * L)
 {
-	luaL_Stream * p = LSOCK_CHECKSTREAM(L, 1);
+	luaL_Stream * p = LSOCK_CHECKFH(L, 1);
 
 	return luaL_fileresult(L, (0 == fclose(p->f)), NULL);
 }
 
 static luaL_Stream *
-newstream(lua_State * L)
+newfile(lua_State * L)
 {
 	luaL_Stream * p = LSOCK_NEWUDATA(L, sizeof(luaL_Stream));
 
@@ -829,18 +829,22 @@ lsock_ntohl(lua_State * L)
 static int
 lsock_accept(lua_State * L)
 {
-	lsocket       serv  = LSOCK_CHECKSOCKET(L, 1);
-	luaL_Stream * newfh = NULL;
-	socklen_t     sz    = sizeof(lsockaddr);
+	luaL_Stream * fh;
+	lsocket       new;
 	lsockaddr     info;
 
-	lsocket       newsock = accept(serv, (struct sockaddr *) &info, &sz);
+	lsocket       serv = LSOCK_CHECKSOCK(L, 1);
+	socklen_t     sz   = sizeof(lsockaddr);
 
-	if (INVALID_SOCKET(newsock))
+	BZERO(&info, sizeof(info));
+
+	new = accept(serv, (struct sockaddr *) &info, &sz);
+
+	if (INVALID_SOCKET(new))
 		return LSOCK_STRERROR(L, NULL);
 
-	newfh    = newstream(L);
-	newfh->f = lsocket_to_stream(L, newsock);
+	fh = newfile(L);
+	fh->f = sock_to_file(L, new);
 
 	lua_pushlstring(L, (char *) &info, sz);
 
@@ -854,7 +858,7 @@ lsock_accept(lua_State * L)
 static int
 lsock_listen(lua_State * L)
 {
-	lsocket serv = LSOCK_CHECKSOCKET(L, 1);
+	lsocket serv = LSOCK_CHECKSOCK(L, 1);
 	int  backlog = luaL_checknumber(L, 2);
 
 	if (SOCKFAIL(listen(serv, backlog)))
@@ -873,7 +877,7 @@ static int
 lsock_bind(lua_State * L)
 {
 	size_t       sz   = 0;
-	lsocket      serv = LSOCK_CHECKSOCKET(L, 1);
+	lsocket      serv = LSOCK_CHECKSOCK(L, 1);
 	const char * addr = luaL_checklstring(L, 2, &sz);
 
 	if (SOCKFAIL(bind(serv, (struct sockaddr *) addr, sz)))
@@ -892,7 +896,7 @@ static int
 lsock_connect(lua_State * L)
 {
 	size_t       sz     = 0;
-	lsocket      client = LSOCK_CHECKSOCKET(L, 1);
+	lsocket      client = LSOCK_CHECKSOCK(L, 1);
 	const char * addr   = luaL_checklstring(L, 2, &sz);
 
 	if (SOCKFAIL(connect(client, (struct sockaddr *) addr, sz)))
@@ -912,7 +916,7 @@ lsock_getsockname(lua_State * L)
 {
 	lsockaddr addr;
 
-	lsocket    s = LSOCK_CHECKSOCKET(L, 1);
+	lsocket    s = LSOCK_CHECKSOCK(L, 1);
 	socklen_t sz = sizeof(addr);
 
 	BZERO(&addr, sizeof(addr));
@@ -934,7 +938,7 @@ lsock_getpeername(lua_State * L)
 {
 	lsockaddr addr;
 
-	lsocket    s = LSOCK_CHECKSOCKET(L, 1);
+	lsocket    s = LSOCK_CHECKSOCK(L, 1);
 	socklen_t sz = sizeof(addr);
 
 	BZERO(&addr, sizeof(addr));
@@ -958,7 +962,7 @@ lsock_sendto(lua_State * L)
 
 	size_t s_len = 0;
 
-	lsocket      sock   = LSOCK_CHECKSOCKET(L, 1);
+	lsocket      sock   = LSOCK_CHECKSOCK(L, 1);
 	const char * s      = luaL_checklstring(L, 2, &s_len);
 	size_t       i      = luaL_checknumber(L, 3);
 	size_t       j      = luaL_checknumber(L, 4);
@@ -1013,7 +1017,7 @@ lsock_recvfrom(lua_State * L)
 	char * buf;
 	luaL_Buffer B;
 
-	lsocket s   = LSOCK_CHECKSOCKET(L, 1);
+	lsocket s   = LSOCK_CHECKSOCK(L, 1);
 	size_t  buflen = luaL_checknumber(L, 2);
 	int     flags  = luaL_checknumber(L, 3);
 
@@ -1059,7 +1063,7 @@ lsock_recv(lua_State * L)
 static int
 lsock_shutdown(lua_State * L)
 {
-	lsocket sock = LSOCK_CHECKSOCKET(L, 1);
+	lsocket sock = LSOCK_CHECKSOCK(L, 1);
 	int     how  = luaL_checknumber(L, 2);
 
 	if (SOCKFAIL(shutdown(sock, how)))
@@ -1083,13 +1087,13 @@ lsock_socket(lua_State * L)
 		type     = luaL_checknumber(L, 2),
 		protocol = luaL_checknumber(L, 3);
 
-	lsocket sock = socket(domain, type, protocol);
+	lsocket new = socket(domain, type, protocol);
 
-	if (INVALID_SOCKET(sock))
+	if (INVALID_SOCKET(new))
 		return LSOCK_STRERROR(L, NULL);
 
-	stream    = newstream(L);
-	stream->f = lsocket_to_stream(L, sock);
+	stream    = newfile(L);
+	stream->f = sock_to_file(L, new);
 
 	return 1;
 }
@@ -1101,7 +1105,7 @@ lsock_socket(lua_State * L)
 static int
 lsock_unblock(lua_State * L)
 {
-	lsocket s = LSOCK_CHECKSOCKET(L, 1);
+	lsocket s = LSOCK_CHECKSOCK(L, 1);
 	int unblock = LSOCK_CHECKBOOL(L, 2);
 
 #ifdef _WIN32
@@ -1146,7 +1150,7 @@ lsock_unblock(lua_State * L)
 static int
 lsock_close(lua_State * L)
 {
-	lsocket s = LSOCK_CHECKSOCKET(L, 1);
+	lsocket s = LSOCK_CHECKSOCK(L, 1);
 
 #ifdef _WIN32
 	if (SOCKFAIL(closesocket(s))
@@ -1170,7 +1174,7 @@ enum { SOCKOPT_BOOLEAN, SOCKOPT_NUMBER, SOCKOPT_LINGER, SOCKOPT_IFNAM, SOCKOPT_I
 static int
 sockopt(lua_State * L)
 {
-	lsocket s = LSOCK_CHECKSOCKET(L, 1);
+	lsocket s = LSOCK_CHECKSOCK(L, 1);
 	int level = luaL_checknumber(L, 2);
 	int option = luaL_checknumber(L, 3);
 
@@ -1721,7 +1725,7 @@ lsock_select(lua_State * L)
 static int
 lsock_socketpair(lua_State * L)
 {
-	lsocket pair[2] = { -1, -1 };
+	int pair[2] = { -1, -1 };
 
 	luaL_Stream * one = NULL;
 	luaL_Stream * two = NULL;
@@ -1733,11 +1737,11 @@ lsock_socketpair(lua_State * L)
 	if (SOCKFAIL(socketpair(domain, type, protocol, pair)))
 		return LSOCK_STRERROR(L, NULL);
 
-	one    = newstream(L);
-	one->f = lsocket_to_stream(L, pair[0]);
+	one = newfile(L);
+	one->f = fd_to_file(L, pair[0]);
 
-	two    = newstream(L);
-	two->f = lsocket_to_stream(L, pair[1]);
+	two = newfile(L);
+	two->f = fd_to_file(L, pair[1]);
 
 	return 2;
 }
@@ -1807,7 +1811,7 @@ lsock_cleanup(lua_State * L)
 /* }}} */
 #endif
 
-/* {{{ luaopen_lsock_core() */
+/* {{{ luaopen_lsock() */
 
 #define LUA_REG(x) { #x, lsock_##x }
 
@@ -1855,7 +1859,7 @@ static luaL_Reg lsocklib[] =
 
 
 LUALIB_API int
-luaopen_lsock_core(lua_State * L)
+luaopen_lsock(lua_State * L)
 {
 #ifdef _WIN32
 	WSADATA wsaData;
