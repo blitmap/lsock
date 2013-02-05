@@ -1636,13 +1636,7 @@ lsock_select(lua_State * L)
 	/* parse tables into fd_sets */
 	for (x = 1; x <= 3; x++)
 	{
-		int how_many = 0;
-
-		lua_len(L, x);
-
-		how_many = lua_tonumber(L, -1);
-
-		lua_pop(L, 1);
+		int how_many = luaL_len(L, x);
 
 		for (y = 1; y <= how_many; y++)
 		{
@@ -1672,13 +1666,7 @@ lsock_select(lua_State * L)
 	/* parse fd_sets back into tables */
 	for (x = 1; x <= 3; x++)
 	{
-		int how_many = 0;
-
-		lua_len(L, x);
-
-		how_many = lua_tonumber(L, -1);
-
-		lua_pop(L, 1);
+		int how_many = luaL_len(L, x);
 
 		/* reuse stat for how many array elems we might have */
 		lua_createtable(L, stat, 0);
