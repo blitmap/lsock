@@ -107,6 +107,11 @@ typedef union
 **			- connect()
 **			- listen()
 **			- shutdown()
+**			- recv()     -- wrapper over recvfrom()
+**			- recvfrom()
+**			- send()     -- wrapper over sendto()
+**			- sendto()   -- wrapper over sendmsg()
+**			- sendmsg()
 **
 **			- getsockopt()
 **			- setsockopt()
@@ -125,13 +130,8 @@ typedef union
 **			- getaddrinfo()
 **			- getnameinfo()
 **
-** ALMOST:
-**			- send()/sendto()   -- (sendto())
-**			- recv()/recvfrom() -- (recvfrom())
-**
 ** TODO:
-**			- sendmsg() -- maybe send()+sendmsg() can be wrappers?
-**			- recvmsg() -- maybe recv()+recvmsg() can be wrappers?
+**			- recvmsg()     -- recv() -> recvfrom() -> recvmsg() ??
 **
 **			- ioctl()       -- unnecessary?
 **
@@ -204,6 +204,100 @@ lsock_gai_strerror(lua_State * L)
 }
 
 /* }}} */
+
+/* }}} */
+
+/* {{{ strij_to_payload() */
+
+/* this is evil, unreadable, and clever; ripped from 5.2 */
+static size_t
+posrelat(ptrdiff_t pos, size_t len)
+{
+	if (pos >= 0)
+		return (size_t) pos;
+	else if (0u - (size_t) pos > len)
+		return 0;
+	else
+		return len - ((size_t) -pos) + 1;
+}
+
+static void
+strij_to_payload(lua_State * L, int idx, const char ** s, size_t * count)
+{
+	int t;
+
+	idx = lua_absindex(L, idx);
+	t   = lua_type(L, idx);
+
+	/* for safety? */
+	*s     = "";
+	*count = 0;
+
+	luaL_argcheck(L, LUA_TSTRING == t || LUA_TTABLE == t, idx, "string or table expected");
+
+	if (LUA_TTABLE == t)
+	{
+		size_t l = 0;
+		size_t i, j;
+		const char * str;
+
+		/* ---- */
+
+		lua_pushnumber(L, 1);
+		lua_gettable(L, idx);
+
+		str = luaL_optlstring(L, -1, "", &l);
+		lua_pop(L, 1);
+
+		/* ---- */
+
+		lua_pushnumber(L, 2);
+		lua_gettable(L, idx);
+
+		if (lua_isnil(L, -1))
+		{
+			lua_pop(L, 1);
+			lua_getfield(L, idx, "i");
+		}
+
+		i = posrelat(luaL_optnumber(L, -1, 1), 1);
+		lua_pop(L, 1);
+
+		/* ---- */
+
+		lua_pushnumber(L, 3);
+		lua_gettable(L, idx);
+
+		if (lua_isnil(L, -1))
+		{
+			lua_pop(L, 1);
+			lua_getfield(L, idx, "j");
+		}
+
+		j = posrelat(luaL_optnumber(L, -1, l), l);
+		lua_pop(L, 1);
+
+		/* ---- */
+
+		/* pretty identical to string.sub() here */
+		if (i < 1)
+			i = 1;
+
+		if (j > l)
+			j = l;
+
+		if (j > i)
+			return;
+		
+		*s     = (str - 1) + i;
+		*count = (j   - i) + 1;
+
+		return;
+	}
+
+	/* if we're here, it's a string not a table */
+	*s = lua_tolstring(L, idx, count);
+}
 
 /* }}} */
 
@@ -354,18 +448,22 @@ timeval_to_table(lua_State * L, struct timeval * t)
 /* {{{ table_to_timeval() */
 
 static struct timeval *
-table_to_timeval(lua_State * L, int index)
+table_to_timeval(lua_State * L, int idx)
 {
-	struct timeval * t = LSOCK_NEWUDATA(L, sizeof(struct timeval));
+	struct timeval * t;
 
-	lua_getfield(L, index, "tv_sec");
+	idx = lua_absindex(L, idx);
+
+	t = LSOCK_NEWUDATA(L, sizeof(struct timeval));
+
+	lua_getfield(L, idx, "tv_sec");
 
 	if (!lua_isnil(L, -1))
 		t->tv_sec = lua_tonumber(L, -1);
 
 	lua_pop(L, 1);
 
-	lua_getfield(L, index, "tv_usec");
+	lua_getfield(L, idx, "tv_usec");
 
 	if (!lua_isnil(L, -1))
 		t->tv_usec = lua_tonumber(L, -1);
@@ -396,18 +494,22 @@ linger_to_table(lua_State * L, struct linger * l)
 /* {{{ table_to_linger() */
 
 static struct linger *
-table_to_linger(lua_State * L, int index)
+table_to_linger(lua_State * L, int idx)
 {
-	struct linger * l = LSOCK_NEWUDATA(L, sizeof(struct linger));
+	struct linger * l;
+	
+	idx = lua_absindex(L, idx);
 
-	lua_getfield(L, index, "l_onoff");
+	l = LSOCK_NEWUDATA(L, sizeof(struct linger));
+
+	lua_getfield(L, idx, "l_onoff");
 
 	if (!lua_isnil(L, -1))
 		l->l_onoff = lua_tonumber(L, -1);
 
 	lua_pop(L, 1);
 
-	lua_getfield(L, index, "l_linger");
+	lua_getfield(L, idx, "l_linger");
 
 	if (!lua_isnil(L, -1))
 		l->l_linger = lua_tonumber(L, -1);
@@ -551,7 +653,7 @@ enum SOCKADDR_FIELDS
 };
 
 static const char *
-table_to_sockaddr(lua_State * L, int index)
+table_to_sockaddr(lua_State * L, int idx)
 {
 	unsigned int i;
 
@@ -560,9 +662,11 @@ table_to_sockaddr(lua_State * L, int index)
 
 	BZERO(&lsa, sizeof(lsa));
 
+	idx = lua_absindex(L, idx);
+
 	for (i = 0; i < 13; i++)
 	{
-		lua_getfield(L, index, members[i]);
+		lua_getfield(L, idx, members[i]);
 
 		if (lua_isnil(L, -1))
 			goto next_member;
@@ -953,38 +1057,82 @@ lsock_getpeername(lua_State * L)
 
 /* }}} */
 
-/* {{{ lsock_sendto() */
+/* {{{ lsock_sendmsg() */
 
 static int
-lsock_sendto(lua_State * L)
+lsock_sendmsg(lua_State * L)
 {
 	ssize_t sent;
 
-	size_t s_len = 0;
+	int n, x;
+	struct iovec * iov;
+	struct msghdr data;
 
-	lsocket      sock   = LSOCK_CHECKSOCK(L, 1);
-	const char * s      = luaL_checklstring(L, 2, &s_len);
-	size_t       i      = luaL_checknumber(L, 3);
-	size_t       j      = luaL_checknumber(L, 4);
-	int          flags  = luaL_checknumber(L, 5);
+	const char * sa = "";
+	size_t sa_len = 0;
 
-	const char * to     = NULL;
-	size_t       to_len = 0;
+	lsocket s = LSOCK_CHECKSOCK(L, 1);
+	int flags = luaL_checknumber(L, 3);
 
-	if (!lua_isnone(L, 6))
-		to = luaL_checklstring(L, 6, &to_len);
+	BZERO(&data, sizeof(data));
 
-	if (i < 1 || j > s_len)
-		luaL_error(L, "out of bounds [%d,%d]: send data is %d bytes", i, j, s_len);
+	luaL_checktype(L, 2, LUA_TTABLE);
 
-	sent = sendto(sock, (s - 1) + i, (j - i) + 1, flags, (struct sockaddr *) to, to_len);
+	n   = luaL_len(L, 2);
+	iov = LSOCK_NEWUDATA(L, sizeof(struct iovec) * n);
+
+	for (x = 1; x <= n; x++)
+	{
+		const char * s;
+		size_t count = 0;
+
+		lua_pushnumber(L, x);
+		lua_gettable(L, 2);
+
+		strij_to_payload(L, -1, &s, &count);
+
+		iov[x - 1].iov_base = (char *) s;
+		iov[x - 1].iov_len  = count;
+
+		lua_pop(L, 1); /* the string /or/ table */
+	}
+
+	if (!lua_isnone(L, 4))
+		sa = luaL_checklstring(L, 4, &sa_len);
+
+	data.msg_name    = (char *) sa;
+	data.msg_namelen = sa_len;
+
+	data.msg_iov    = iov;
+	data.msg_iovlen = n;
+
+	/* maybe allow ancillary data with .msg_control & .msg_controllen in the future? */
+
+	sent = sendmsg(s, &data, flags);
 
 	if (SOCKFAIL(sent))
 		return LSOCK_STRERROR(L, NULL);
 
 	lua_pushnumber(L, sent);
 
-	return 1; /* success! */
+	return 1;
+}
+
+/* }}} */
+
+/* {{{ lsock_sendto() */
+
+static int
+lsock_sendto(lua_State * L)
+{
+	/* put arg 2 in a table for sendmsg() */
+	lua_newtable(L);
+	lua_pushnumber(L, 1);
+	lua_pushvalue(L, 2);
+	lua_settable(L, -3);
+	lua_replace(L, 2);
+
+	return lsock_sendmsg(L);
 }
 
 /* }}} */
@@ -1384,7 +1532,7 @@ sockopt(lua_State * L)
 				}
 				else
 				{
-					struct linger * l = NULL; 
+					struct linger * l = NULL;
 					socklen_t sz = 0;
 
 					luaL_checktype(L, 4, LUA_TTABLE);
@@ -1832,6 +1980,7 @@ static luaL_Reg lsocklib[] =
 #endif
 	LUA_REG(send),
 	LUA_REG(sendto),
+	LUA_REG(sendmsg),
 	LUA_REG(setsockopt),
 	LUA_REG(shutdown),
 	LUA_REG(socket),
@@ -2006,10 +2155,25 @@ luaopen_lsock(lua_State * L)
 	LSOCK_CONST(EAI_SYSTEM    );
 
 	/* send() & recv() flag constants */
-	LSOCK_CONST(MSG_EOR    );
-	LSOCK_CONST(MSG_OOB    );
-	LSOCK_CONST(MSG_PEEK   );
-	LSOCK_CONST(MSG_WAITALL);
+	LSOCK_CONST(MSG_OOB       ); /* Process out-of-band data.  */
+	LSOCK_CONST(MSG_PEEK      ); /* Peek at incoming messages.  */
+	LSOCK_CONST(MSG_DONTROUTE ); /* Don't use local routing.  */
+	LSOCK_CONST(MSG_TRYHARD   );
+	LSOCK_CONST(MSG_CTRUNC    ); /* Control data lost before delivery.  */
+	LSOCK_CONST(MSG_PROXY     ); /* Supply or ask second address.  */
+	LSOCK_CONST(MSG_TRUNC     );
+	LSOCK_CONST(MSG_DONTWAIT  ); /* Nonblocking IO.  */
+	LSOCK_CONST(MSG_EOR       ); /* End of record.  */
+	LSOCK_CONST(MSG_WAITALL   ); /* Wait for a full request.  */
+	LSOCK_CONST(MSG_FIN       );
+	LSOCK_CONST(MSG_SYN       );
+	LSOCK_CONST(MSG_CONFIRM   ); /* Confirm path validity.  */
+	LSOCK_CONST(MSG_RST       );
+	LSOCK_CONST(MSG_ERRQUEUE  ); /* Fetch message from error queue.  */
+	LSOCK_CONST(MSG_NOSIGNAL  ); /* Do not generate SIGPIPE.  */
+	LSOCK_CONST(MSG_MORE      ); /* Sender will send more.  */
+	LSOCK_CONST(MSG_WAITFORONE); /* Wait for at least one packet to return.*/
+   	LSOCK_CONST(MSG_FASTOPEN  ); /* Send data in TCP SYN.  */
 
 	LSOCK_CONST(SHUT_RD  );
 	LSOCK_CONST(SHUT_RDWR);
