@@ -1083,18 +1083,18 @@ lsock_sendmsg(lua_State * L)
 	n   = luaL_len(L, 2);
 	iov = LSOCK_NEWUDATA(L, sizeof(struct iovec) * n);
 
-	for (x = 1; x <= n; x++)
+	for (x = 0; x < n; x++)
 	{
 		const char * s = "";
 		size_t count = 0;
 
-		lua_pushnumber(L, x);
+		lua_pushnumber(L, x + 1);
 		lua_gettable(L, 2);
 
 		strij_to_payload(L, -1, &s, &count);
 
-		iov[x - 1].iov_base = (char *) s;
-		iov[x - 1].iov_len  = count;
+		iov[x].iov_base = (char *) s;
+		iov[x].iov_len  = count;
 
 		lua_pop(L, 1); /* the string /or/ table */
 	}
