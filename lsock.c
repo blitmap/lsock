@@ -229,8 +229,8 @@ strij_to_payload(lua_State * L, int idx, const char ** s, size_t * count)
 	idx = lua_absindex(L, idx);
 	t   = lua_type(L, idx);
 
-	/* for safety? */
-	*s     = "";
+	/* for safety */
+	*s = "";
 	*count = 0;
 
 	luaL_argcheck(L, LUA_TSTRING == t || LUA_TTABLE == t, idx, "string or table expected");
@@ -286,7 +286,9 @@ strij_to_payload(lua_State * L, int idx, const char ** s, size_t * count)
 		if (j > l)
 			j = l;
 
-		if (j > i)
+		/* string.sub('abcdefghij', -4, -6) -> string.sub('abcdefghij', 7, 5) -> ''
+		** we are asserting that i comes before j */
+		if (i > j)
 			return;
 		
 		*s     = (str - 1) + i;
@@ -296,7 +298,7 @@ strij_to_payload(lua_State * L, int idx, const char ** s, size_t * count)
 	}
 
 	/* if we're here, it's a string not a table */
-	*s = lua_tolstring(L, idx, count);
+	*s = luaL_optlstring(L, idx, "", count);
 }
 
 /* }}} */
@@ -1083,7 +1085,7 @@ lsock_sendmsg(lua_State * L)
 
 	for (x = 1; x <= n; x++)
 	{
-		const char * s;
+		const char * s = "";
 		size_t count = 0;
 
 		lua_pushnumber(L, x);
@@ -1993,7 +1995,6 @@ static luaL_Reg lsocklib[] =
 };
 
 #undef LUA_REG
-
 
 LUALIB_API int
 luaopen_lsock(lua_State * L)
