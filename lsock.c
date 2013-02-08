@@ -1756,15 +1756,15 @@ lsock_getnameinfo(lua_State * L)
 
 /* {{{ lsock_select() */
 
-enum { R_SET = 1, W_SET, E_SET };
+enum { R, W, E };
 
 static int
 lsock_select(lua_State * L)
 {
-	fd_set r, w, e;
 	int x, y, stat;
 
-	int highsock = 1;
+	fd_set set[3];
+	int highsock = 0;
 	struct timeval * t = NULL;
 
 	luaL_checktype(L, 1, LUA_TTABLE); /*  readfds */
@@ -1777,11 +1777,7 @@ lsock_select(lua_State * L)
 		t = table_to_timeval(L, 4);
 	}
 
-	FD_ZERO(&r);
-	FD_ZERO(&w);
-	FD_ZERO(&e);
-
-	highsock = 0;
+	BZERO(&set, sizeof(set));
 
 	/* parse tables into fd_sets */
 	for (x = 1; x <= 3; x++)
@@ -1799,16 +1795,11 @@ lsock_select(lua_State * L)
 
 			highsock = MAX(highsock, fd);
 
-			switch (x)
-			{
-				case R_SET: FD_SET(fd, &r); break;
-				case W_SET: FD_SET(fd, &w); break;
-				case E_SET: FD_SET(fd, &e); break;
-			}
+			FD_SET(fd, &set[x - 1]);
 		}
 	}
 
-	stat = select(highsock + 1, &r, &w, &e, t);
+	stat = select(highsock + 1, &set[R], &set[W], &set[E], t);
 
 	if (-1 == stat)
 		LSOCK_STRERROR(L, NULL);
@@ -1823,8 +1814,7 @@ lsock_select(lua_State * L)
 
 		for (y = 1; y <= how_many; y++)
 		{
-			int isset =  0;
-			int fd    = -1;
+			int fd;
 
 			/* push the file handle (socket) userdata */
 			lua_pushnumber(L, y);
@@ -1832,14 +1822,7 @@ lsock_select(lua_State * L)
 
 			fd = LSOCK_CHECKFD(L, -1);
 
-			switch (x)
-			{
-				case R_SET: isset = FD_ISSET(fd, &r); break;
-				case W_SET: isset = FD_ISSET(fd, &w); break;
-				case E_SET: isset = FD_ISSET(fd, &e); break;
-			}
-
-			if (isset)
+			if (FD_ISSET(fd, &set[y - 1]))
 			{
 				lua_pushnumber(L, y); /* the numeric index */
 				lua_pushvalue(L, -2); /* the file handle */
