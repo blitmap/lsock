@@ -1066,7 +1066,9 @@ lsock_sendmsg(lua_State * L)
 {
 	ssize_t sent;
 
-	int n, x;
+	int x;
+	int nargs;
+	int arg2_type;
 	struct iovec * iov;
 	struct msghdr data;
 
@@ -1078,12 +1080,29 @@ lsock_sendmsg(lua_State * L)
 
 	BZERO(&data, sizeof(data));
 
-	luaL_checktype(L, 2, LUA_TTABLE);
+	arg2_type = lua_type(L, 2);
 
-	n   = luaL_len(L, 2);
-	iov = LSOCK_NEWUDATA(L, sizeof(struct iovec) * n);
+	/* important this comes before LSOCK_NEWUDATA() */
+	if (!lua_isnone(L, 4))
+		sa = luaL_checklstring(L, 4, &sa_len);
 
-	for (x = 0; x < n; x++)
+	/* consistent with an error found in lbaselib.c in Lua 5.2 */
+	luaL_argcheck(L, 2, LUA_TTABLE == arg2_type || LUA_TSTRING == arg2_type, "table or string expected");
+
+	if (LUA_TSTRING == arg2_type)
+	{
+		/* put arg 2 in a table for sendmsg() */
+		lua_newtable(L);
+		lua_pushnumber(L, 1);
+		lua_pushvalue(L, 2);
+		lua_settable(L, -3);
+		lua_replace(L, 2);
+	}
+
+	nargs = luaL_len(L, 2);
+	iov   = LSOCK_NEWUDATA(L, sizeof(struct iovec) * nargs);
+
+	for (x = 0; x < nargs; x++)
 	{
 		const char * s = "";
 		size_t count = 0;
@@ -1099,14 +1118,11 @@ lsock_sendmsg(lua_State * L)
 		lua_pop(L, 1); /* the string /or/ table */
 	}
 
-	if (!lua_isnone(L, 4))
-		sa = luaL_checklstring(L, 4, &sa_len);
-
 	data.msg_name    = (char *) sa;
 	data.msg_namelen = sa_len;
 
 	data.msg_iov    = iov;
-	data.msg_iovlen = n;
+	data.msg_iovlen = nargs;
 
 	/* maybe allow ancillary data with .msg_control & .msg_controllen in the future? */
 
@@ -1127,12 +1143,10 @@ lsock_sendmsg(lua_State * L)
 static int
 lsock_sendto(lua_State * L)
 {
-	/* put arg 2 in a table for sendmsg() */
-	lua_newtable(L);
-	lua_pushnumber(L, 1);
-	lua_pushvalue(L, 2);
-	lua_settable(L, -3);
-	lua_replace(L, 2);
+	int n = lua_gettop(L);
+
+	if (n > 4)
+		lua_pop(L, n - 4);
 
 	return lsock_sendmsg(L);
 }
@@ -1146,10 +1160,10 @@ lsock_send(lua_State * L)
 {
 	int n = lua_gettop(L);
 
-	if (n > 5)
-		lua_pop(L, n - 5);
+	if (n > 3)
+		lua_pop(L, n - 3);
 	
-	return lsock_sendto(L);
+	return lsock_sendmsg(L);
 }
 
 /* }}} */
