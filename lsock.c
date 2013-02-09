@@ -45,10 +45,6 @@
 
 #define UNIX_PATH_MAX sizeof(((struct sockaddr_un *) NULL)->sun_path)
 
-#define SO_REUSEPORT 15 /* as per instruction in asm-generic/socket.h */
-
-#define LSOCK_FDOPEN_MODE "r+b"
-
 #ifdef _WIN32
 typedef SOCKET lsocket;
 #else
@@ -335,14 +331,17 @@ file_to_fd(lua_State * L, FILE * stream)
 /* {{{ fd_to_file() */
 
 static FILE *
-fd_to_file(lua_State * L, int fd)
+fd_to_file(lua_State * L, int fd, char * mode)
 {
 	FILE * stream = NULL;
 
+	if (NULL == mode)
+		mode = "r+b";
+
 #ifdef _WIN32
-	stream = _fdopen(fd, LSOCK_FDOPEN_MODE);
+	stream = _fdopen(fd, mode);
 #else
-	stream = fdopen(fd, LSOCK_FDOPEN_MODE);
+	stream = fdopen(fd, mode);
 #endif
 
 	if (NULL == stream)
@@ -419,10 +418,10 @@ file_to_sock(lua_State * L, FILE * stream)
 /* {{{ sock_to_file() */
 
 static FILE *
-sock_to_file(lua_State * L, lsocket sock)
+sock_to_file(lua_State * L, lsocket sock, char * mode)
 {
 	/* \o/ \o| |o/ \o/ \o| |o/ \o/ */
-	return fd_to_file(L, sock_to_fd(L, sock));
+	return fd_to_file(L, sock_to_fd(L, sock), mode);
 }
 
 /* }}} */
@@ -950,7 +949,7 @@ lsock_accept(lua_State * L)
 		return LSOCK_STRERROR(L, NULL);
 
 	fh = newfile(L);
-	fh->f = sock_to_file(L, new);
+	fh->f = sock_to_file(L, new, NULL);
 
 	lua_pushlstring(L, (char *) &info, sz);
 
@@ -1257,7 +1256,7 @@ lsock_socket(lua_State * L)
 		return LSOCK_STRERROR(L, NULL);
 
 	stream    = newfile(L);
-	stream->f = sock_to_file(L, new);
+	stream->f = sock_to_file(L, new, NULL);
 
 	return 1;
 }
@@ -1352,7 +1351,6 @@ sockopt(lua_State * L)
 			case SO_ACCEPTCONN:
 			case SO_BROADCAST:
 			case SO_REUSEADDR:
-			case SO_REUSEPORT:
 			case SO_KEEPALIVE:
 			case SO_OOBINLINE:
 			case SO_DONTROUTE:
@@ -1854,6 +1852,35 @@ lsock_select(lua_State * L)
 
 /* }}} */
 
+/* {{{ lsock_pipe() */
+
+static int
+lsock_pipe(lua_State * L)
+{
+	lsocket pair[2] = { -1, -1 };
+
+	luaL_Stream * r = NULL;
+	luaL_Stream * w = NULL;
+
+#ifdef _WIN32
+	if (0 == CreatePipe(&pair[0], &pair[1], NULL, luaL_optnumber(L, 1, 0)))
+		return LSOCK_STRERROR(L, "CreatePipe()");
+#else
+	if (SOCKFAIL(pipe(pair)))
+		return LSOCK_STRERROR(L, NULL);
+#endif
+
+	r = newfile(L);
+	r->f = fd_to_file(L, pair[0], "rb");
+
+	w = newfile(L);
+	w->f = fd_to_file(L, pair[1], "wb");
+
+	return 2;
+}
+
+/* }}} */
+
 #ifndef _WIN32
 /* {{{ lsock_socketpair() */
 
@@ -1873,10 +1900,10 @@ lsock_socketpair(lua_State * L)
 		return LSOCK_STRERROR(L, NULL);
 
 	one = newfile(L);
-	one->f = fd_to_file(L, pair[0]);
+	one->f = fd_to_file(L, pair[0], NULL);
 
 	two = newfile(L);
-	two->f = fd_to_file(L, pair[1]);
+	two->f = fd_to_file(L, pair[1], NULL);
 
 	return 2;
 }
@@ -1963,6 +1990,7 @@ static luaL_Reg lsocklib[] =
 	LUA_REG(ntohl),
 	LUA_REG(listen),
 	LUA_REG(pack_sockaddr),
+	LUA_REG(pipe),
 	LUA_REG(recv),
 	LUA_REG(recvfrom),
 	LUA_REG(select),
@@ -2179,7 +2207,6 @@ luaopen_lsock(lua_State * L)
 	LSOCK_CONST(SO_DEBUG                  );
 	LSOCK_CONST(SO_ACCEPTCONN             );
 	LSOCK_CONST(SO_REUSEADDR              );
-	LSOCK_CONST(SO_REUSEPORT              );
 	LSOCK_CONST(SO_KEEPALIVE              );
 	LSOCK_CONST(SO_LINGER                 );
 	LSOCK_CONST(SO_OOBINLINE              );
