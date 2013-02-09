@@ -1892,27 +1892,19 @@ lsock_sendfile(lua_State * L)
 {
 	ssize_t sent;
 
-	int    out    =    LSOCK_CHECKFD(L, 1);
-	int    in     =    LSOCK_CHECKFD(L, 2);
+	int    out    = LSOCK_CHECKFD(L, 1);
+	int    in     = LSOCK_CHECKFD(L, 2);
 	size_t count  = luaL_checknumber(L, 4);
+	off_t  offset = luaL_optnumber(L, 3, 0);
 
-	off_t   offset = -1;
-	off_t * offptr = &offset;
-
-	if (lua_isnil(L, 3))
-		offptr = NULL;
-	else
-		offset = luaL_checknumber(L, 3);
-
-	sent = sendfile(out, in, offptr, count);
+	sent = sendfile(out, in, lua_isnil(L, 3) ? NULL : &offset, count);
 
 	if (-1 == sent)
 		return LSOCK_STRERROR(L, NULL);
 
 	lua_pushnumber(L, sent);
-	lua_pushnumber(L, offset); /* just for aqua */
 
-	return 2;
+	return 1;
 }
 
 /* }}} */
