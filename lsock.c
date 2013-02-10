@@ -1475,13 +1475,6 @@ sockopt(lua_State * L)
 				break;
 		}
 	}
-	else
-	{
-		lua_pushnil(L);
-		lua_pushliteral(L, "sockopt level not supported");
-
-		return 2;
-	}
 
 	switch (opt_type)
 	{
@@ -1589,7 +1582,7 @@ sockopt(lua_State * L)
 
 		default:
 			lua_pushnil(L);
-			lua_pushfstring(L, "could not %s socket option", get ? "get" : "set");
+			lua_pushfstring(L, "could not %s unknown socket option", get ? "get" : "set");
 
 			return 2;
 
