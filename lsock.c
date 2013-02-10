@@ -1486,7 +1486,7 @@ sockopt(lua_State * L)
 				if (get)
 				{
 					if (SOCKFAIL(getsockopt(s, level, option, &value, &sz)))
-						goto sockopt_failure;
+						return LSOCK_STRERROR(L, NULL);
 
 					lua_pushboolean(L, value);
 				}
@@ -1495,7 +1495,7 @@ sockopt(lua_State * L)
 					value = LSOCK_CHECKBOOL(L, 4);
 
 					if (SOCKFAIL(setsockopt(s, level, option, &value, sz)))
-						goto sockopt_failure;
+						return LSOCK_STRERROR(L, NULL);
 				}
 			}
 			break;
@@ -1508,7 +1508,7 @@ sockopt(lua_State * L)
 				if (get)
 				{
 					if (SOCKFAIL(getsockopt(s, level, option, &value, &sz)))
-						goto sockopt_failure;
+						return LSOCK_STRERROR(L, NULL);
 
 					lua_pushnumber(L, value);
 				}
@@ -1517,13 +1517,12 @@ sockopt(lua_State * L)
 					value = luaL_checknumber(L, 4);
 
 					if (SOCKFAIL(setsockopt(s, level, option, &value, sz)))
-						goto sockopt_failure;
+						return LSOCK_STRERROR(L, NULL);
 				}
 			}
 			break;
 
 		case SOCKOPT_LINGER:
-			opt_type = SOCKOPT_LINGER;
 			{
 				if (get)
 				{
@@ -1533,7 +1532,7 @@ sockopt(lua_State * L)
 					BZERO(&l, sz);
 
 					if (SOCKFAIL(getsockopt(s, level, option, &l, &sz)))
-						goto sockopt_failure;
+						return LSOCK_STRERROR(L, NULL);
 
 					linger_to_table(L, &l);
 				}
@@ -1548,13 +1547,12 @@ sockopt(lua_State * L)
 					sz = lua_rawlen(L, -1);
 
 					if (SOCKFAIL(setsockopt(s, level, option, l, sz)))
-						goto sockopt_failure;
+						return LSOCK_STRERROR(L, NULL);
 				}
 			}
 			break;
 
 		case SOCKOPT_IFNAM:
-			opt_type = SOCKOPT_IFNAM;
 			{
 				if (get)
 				{
@@ -1564,7 +1562,7 @@ sockopt(lua_State * L)
 					BZERO(buf, sizeof(buf));
 
 					if (SOCKFAIL(getsockopt(s, level, option, buf, &sz)))
-						goto sockopt_failure;
+						return LSOCK_STRERROR(L, NULL);
 
 					lua_pushlstring(L, buf, sz);
 				}
@@ -1575,19 +1573,15 @@ sockopt(lua_State * L)
 					const char * value = luaL_checklstring(L, 4, (size_t *) &sz);
 
 					if (SOCKFAIL(setsockopt(s, level, option, value, sz)))
-						goto sockopt_failure;
+						return LSOCK_STRERROR(L, NULL);
 				}
 			}
 			break;
-
 		default:
 			lua_pushnil(L);
-			lua_pushfstring(L, "could not %s unknown socket option", get ? "get" : "set");
+			lua_pushfstring(L, "unknown level or option passed to %ssockopt()", get ? "get" : "set");
 
 			return 2;
-
-sockopt_failure:
-		return LSOCK_STRERROR(L, NULL);
 	}
 
 	return get;
