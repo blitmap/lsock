@@ -1,5 +1,4 @@
-/* compile: gcc -o lsock.{so,c} -shared -fPIC -pedantic -ansi -std=c89 -W -Wall -llua -lm -ldl -flto -fstack-protector-all -O1 -g */
-/* release: gcc -o lsock.{so,c} -shared -fPIC -pedantic -ansi -std=c89 -W -Wall -llua -lm -ldl -flto -fstack-protector-all -Os -s */
+/* compile: gcc -o lsock.{so,c} -shared -fPIC -pedantic -ansi -std=c89 -W -Wall -llua -lm -ldl -flto -fstack-protector-all -Os -s */
 
 #ifndef _POSIX_SOURCE
 #	define _POSIX_SOURCE
@@ -61,8 +60,6 @@ typedef int    lsocket;
 #define LSOCK_GAIERROR(L, err  ) lsock_error(L, err,         (char * (*)(int)) &gai_strerror, NULL )
 #define LSOCK_STRFATAL(L, fname) lsock_fatal(L, LSOCK_ERRNO, (char * (*)(int)) &strerror,     fname)
 
-#define LSOCK_CHECKBOOL(L, index) (luaL_checktype(L, index, LUA_TBOOLEAN), lua_toboolean(L, index))
-
 #ifdef _WIN32
 #	define SOCKFAIL(s)   (SOCKET_ERROR == (s))
 #	define INVALID_SOCKET(s) (INVALID_SOCKET == (s))
@@ -99,15 +96,14 @@ typedef union
 **
 **			- socket()
 **			- bind()
-**			- unblock() -- for setting nonblocking mode
+**			- shouldblock() -- for nonblocking io
 **			- connect()
 **			- listen()
 **			- shutdown()
 **			- recv()     -- wrapper over recvfrom()
 **			- recvfrom()
 **			- send()     -- wrapper over sendto()
-**			- sendto()   -- wrapper over sendmsg()
-**			- sendmsg()
+**			- sendto()
 **
 **			- getsockopt()
 **			- setsockopt()
@@ -127,8 +123,6 @@ typedef union
 **			- getnameinfo()
 **
 ** TODO:
-**			- recvmsg()     -- recv() -> recvfrom() -> recvmsg() ??
-**
 **			- ioctl()       -- unnecessary?
 **
 **			- htond()       -- only on Windows
@@ -1058,74 +1052,28 @@ lsock_getpeername(lua_State * L)
 
 /* }}} */
 
-/* {{{ lsock_sendmsg() */
+/* {{{ lsock_sendto() */
 
 static int
-lsock_sendmsg(lua_State * L)
+lsock_sendto(lua_State * L)
 {
 	ssize_t sent;
 
-	int x;
-	int nargs;
-	int arg2_type;
-	struct iovec * iov;
-	struct msghdr data;
+	int flags;
 
-	const char * sa = "";
-	size_t sa_len = 0;
+	size_t data_len = 0;
+	const char * data = NULL;
+
+	size_t sa_len;
+	const char * sa;
 
 	lsocket s = LSOCK_CHECKSOCK(L, 1);
-	int flags = luaL_checknumber(L, 3);
+	strij_to_payload(L, 2, &data, &data_len);
+	flags = luaL_checknumber(L, 3);
 
-	BZERO(&data, sizeof(data));
+	sa = luaL_optlstring(L, 4, "", &sa_len);
 
-	arg2_type = lua_type(L, 2);
-
-	/* important this comes before LSOCK_NEWUDATA() */
-	if (!lua_isnone(L, 4))
-		sa = luaL_checklstring(L, 4, &sa_len);
-
-	/* consistent with an error found in lbaselib.c in Lua 5.2 */
-	luaL_argcheck(L, 2, LUA_TTABLE == arg2_type || LUA_TSTRING == arg2_type, "table or string expected");
-
-	if (LUA_TSTRING == arg2_type)
-	{
-		/* put arg 2 in a table for sendmsg() */
-		lua_newtable(L);
-		lua_pushnumber(L, 1);
-		lua_pushvalue(L, 2);
-		lua_settable(L, -3);
-		lua_replace(L, 2);
-	}
-
-	nargs = luaL_len(L, 2);
-	iov   = LSOCK_NEWUDATA(L, sizeof(struct iovec) * nargs);
-
-	for (x = 0; x < nargs; x++)
-	{
-		const char * s = "";
-		size_t count = 0;
-
-		lua_pushnumber(L, x + 1);
-		lua_gettable(L, 2);
-
-		strij_to_payload(L, -1, &s, &count);
-
-		iov[x].iov_base = (char *) s;
-		iov[x].iov_len  = count;
-
-		lua_pop(L, 1); /* the string /or/ table */
-	}
-
-	data.msg_name    = (char *) sa;
-	data.msg_namelen = sa_len;
-
-	data.msg_iov    = iov;
-	data.msg_iovlen = nargs;
-
-	/* maybe allow ancillary data with .msg_control & .msg_controllen in the future? */
-
-	sent = sendmsg(s, &data, flags);
+	sent = sendto(s, data, data_len, flags, (struct sockaddr *) &sa, sa_len);
 
 	if (SOCKFAIL(sent))
 		return LSOCK_STRERROR(L, NULL);
@@ -1133,21 +1081,6 @@ lsock_sendmsg(lua_State * L)
 	lua_pushnumber(L, sent);
 
 	return 1;
-}
-
-/* }}} */
-
-/* {{{ lsock_sendto() */
-
-static int
-lsock_sendto(lua_State * L)
-{
-	int n = lua_gettop(L);
-
-	if (n > 4)
-		lua_pop(L, n - 4);
-
-	return lsock_sendmsg(L);
 }
 
 /* }}} */
@@ -1161,8 +1094,8 @@ lsock_send(lua_State * L)
 
 	if (n > 3)
 		lua_pop(L, n - 3);
-	
-	return lsock_sendmsg(L);
+
+	return lsock_sendto(L);
 }
 
 /* }}} */
@@ -1184,8 +1117,7 @@ lsock_recvfrom(lua_State * L)
 	size_t  buflen = luaL_checknumber(L, 2);
 	int     flags  = luaL_checknumber(L, 3);
 
-	if (!lua_isnone(L, 4))
-		from = luaL_checklstring(L, 4, (size_t *) &from_len);
+	from = luaL_optlstring(L, 4, "", (size_t *) &from_len);
 
 	buf = luaL_buffinitsize(L, &B, buflen);
 
@@ -1263,16 +1195,16 @@ lsock_socket(lua_State * L)
 
 /* }}} */
 
-/* {{{ lsock_unblock() */
+/* {{{ lsock_shouldblock() */
 
 static int
-lsock_unblock(lua_State * L)
+lsock_shouldblock(lua_State * L)
 {
 	lsocket s = LSOCK_CHECKSOCK(L, 1);
-	int unblock = LSOCK_CHECKBOOL(L, 2);
+	int b = lua_isnone(L, 2) ? 1 : lua_toboolean(L, 2);
 
 #ifdef _WIN32
-	if (SOCKET_ERROR == ioctlsocket(s, FIONBIO, unblock))
+	if (SOCKET_ERROR == ioctlsocket(s, FIONBIO, b))
 		return LSOCK_ERROR(L, "ioctlsocket()");
 #else
 	int flags = fcntl(s, F_GETFL);
@@ -1280,7 +1212,7 @@ lsock_unblock(lua_State * L)
 	if (-1 == flags)
 		return LSOCK_STRERROR(L, "fcntl(F_GETFL)");
 
-	if (unblock)
+	if (b)
 		flags |= O_NONBLOCK;
 	else
 		flags &= ~O_NONBLOCK;
@@ -1291,7 +1223,7 @@ lsock_unblock(lua_State * L)
 	if (-1 == flags)
 		return LSOCK_STRERROR(L, "fcntl(F_SETFL)");
 
-	flags = unblock ? 1 : 0;
+	flags = b ? 1 : 0;
 
 	flags = ioctl(s, FIONBIO, &flags);
 
@@ -1492,7 +1424,7 @@ sockopt(lua_State * L)
 				}
 				else
 				{
-					value = LSOCK_CHECKBOOL(L, 4);
+					value = lua_toboolean(L, 4);
 
 					if (SOCKFAIL(setsockopt(s, level, option, &value, sz)))
 						return LSOCK_STRERROR(L, NULL);
@@ -1961,7 +1893,7 @@ static luaL_Reg lsocklib[] =
 	/* alphabetical */
 	LUA_REG(accept),
 	LUA_REG(bind),
-	LUA_REG(unblock),
+	LUA_REG(shouldblock),
 	LUA_REG(close),
 	LUA_REG(connect),
 	LUA_REG(gai_strerror),
@@ -1986,7 +1918,6 @@ static luaL_Reg lsocklib[] =
 #endif
 	LUA_REG(send),
 	LUA_REG(sendto),
-	LUA_REG(sendmsg),
 	LUA_REG(setsockopt),
 	LUA_REG(shutdown),
 	LUA_REG(socket),
