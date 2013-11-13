@@ -426,6 +426,8 @@ sock_to_file(lua_State * L, lsocket sock, char * mode)
 
 /* {{{ timeval_to_table() */
 
+/* not currently used.... */
+#if 0
 static void
 timeval_to_table(lua_State * L, struct timeval * t)
 {
@@ -437,6 +439,7 @@ timeval_to_table(lua_State * L, struct timeval * t)
 	lua_pushnumber(L, t->tv_usec);
 	lua_setfield(L, -2, "tv_usec");
 }
+#endif
 
 /* }}} */
 
@@ -958,8 +961,10 @@ static int
 lsock_listen(lua_State * L)
 {
 	lsocket serv = LSOCK_CHECKSOCK(L, 1);
-	int  backlog = luaL_checknumber(L, 2);
+	int  backlog = luaL_optinteger(L, 2, 0);
 
+	/* a backlog of zero hints the implementation
+	** to set the ideal connect queue size */
 	if (SOCKFAIL(listen(serv, backlog)))
 		return LSOCK_STRERROR(L, NULL);
 
@@ -1153,7 +1158,6 @@ lsock_recv(lua_State * L)
 /* {{{ lsock_shutdown() */
 
 /* shutdown(sock, how) -> true  -or-  nil, errno */
-/* lsock/init.lua wraps this and sets it as the __gc for sockets */
 
 static int
 lsock_shutdown(lua_State * L)
@@ -1179,8 +1183,8 @@ lsock_socket(lua_State * L)
 	luaL_Stream * stream;
 
 	int domain   = luaL_checknumber(L, 1),
-		type     = luaL_checknumber(L, 2),
-		protocol = luaL_checknumber(L, 3);
+	    type     = luaL_checknumber(L, 2),
+	    protocol = luaL_checknumber(L, 3);
 
 	lsocket new = socket(domain, type, protocol);
 
@@ -2018,7 +2022,7 @@ luaopen_lsock(lua_State * L)
 	LSOCK_CONST(IPPROTO_SCTP    );
 	LSOCK_CONST(IPPROTO_UDPLITE );
 	LSOCK_CONST(IPPROTO_RAW     );
-    LSOCK_CONST(IPPROTO_MAX     );
+	LSOCK_CONST(IPPROTO_MAX     );
 
 
 	/* errno's, alphabetical */
@@ -2089,6 +2093,9 @@ luaopen_lsock(lua_State * L)
 	LSOCK_CONST(EAI_SERVICE   );
 	LSOCK_CONST(EAI_SOCKTYPE  );
 	LSOCK_CONST(EAI_SYSTEM    );
+
+	/* listen()-related */
+	LSOCK_CONST(SOMAXCONN     );
 
 	/* send() & recv() flag constants */
 	LSOCK_CONST(MSG_OOB       ); /* Process out-of-band data.  */
