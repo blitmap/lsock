@@ -1184,7 +1184,7 @@ lsock_socket(lua_State * L)
 
 	int domain   = luaL_checknumber(L, 1),
 	    type     = luaL_checknumber(L, 2),
-	    protocol = luaL_checknumber(L, 3);
+	    protocol = luaL_optnumber  (L, 3, 0);
 
 	lsocket new = socket(domain, type, protocol);
 
