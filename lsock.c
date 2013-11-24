@@ -1209,7 +1209,7 @@ lsock_shouldblock(lua_State * L)
 
 #ifdef _WIN32
 	if (SOCKET_ERROR == ioctlsocket(s, FIONBIO, b))
-		return LSOCK_ERROR(L, "ioctlsocket()");
+		return LSOCK_STRERROR(L, "ioctlsocket()");
 #else
 	int flags = fcntl(s, F_GETFL);
 
@@ -1787,7 +1787,7 @@ lsock_pipe(lua_State * L)
 
 #ifdef _WIN32
 	if (0 == CreatePipe(&pair[0], &pair[1], NULL, luaL_optnumber(L, 1, 0)))
-		return LSOCK_STRERROR(L, "CreatePipe()");
+		return lsock_error(L, GetLastError(), (char * (*)(int)) &strerror, "CreatePipe()");
 #else
 	if (SOCKFAIL(pipe(pair)))
 		return LSOCK_STRERROR(L, NULL);
