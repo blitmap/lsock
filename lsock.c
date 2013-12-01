@@ -570,7 +570,7 @@ invalid_sockaddr:
 				BZERO(dst, sizeof(dst));
 
 				LSOCK_SETFIELD_NUM(L, -1, "sin_family", lsa->in.sin_family);
-				LSOCK_SETFIELD_NUM(L, -1, "sin_port",   lsa->in.sin_port  );
+				LSOCK_SETFIELD_NUM(L, -1, "sin_port",   ntohs(lsa->in.sin_port));
 
 #ifdef _WIN32
 				if (NULL == InetNtop(AF_INET, &lsa->in.sin_addr, (PWSTR) dst, sizeof(dst)))
@@ -676,11 +676,11 @@ table_to_sockaddr(lua_State * L, int idx)
 				lsa.ss.ss_family = (u_short) luaL_checkint(L, -1);
 				break;
 
-			case  SIN_PORT:   lsa.in.sin_port = (u_short) ntohs(luaL_checkint(L, -1)); break;
-			case SIN6_PORT: lsa.in6.sin6_port = (u_short) ntohs(luaL_checkint(L, -1)); break;
+			case  SIN_PORT:   lsa.in.sin_port = (u_short) htons(luaL_checkint(L, -1)); break;
+			case SIN6_PORT: lsa.in6.sin6_port = (u_short) htons(luaL_checkint(L, -1)); break;
 
-			case SIN6_FLOWINFO: lsa.in6.sin6_flowinfo = ntohl(luaL_checklong(L, -1)); break;
-			case SIN6_SCOPE_ID: lsa.in6.sin6_scope_id = ntohl(luaL_checklong(L, -1)); break;
+			case SIN6_FLOWINFO: lsa.in6.sin6_flowinfo = htonl(luaL_checklong(L, -1)); break;
+			case SIN6_SCOPE_ID: lsa.in6.sin6_scope_id = htonl(luaL_checklong(L, -1)); break;
 
 			case  SA_DATA:
 #ifndef _WIN32
