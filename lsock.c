@@ -810,7 +810,7 @@ close_stream(lua_State * L)
 #ifdef _WIN32
 	SOCKET s = file_to_sock(p->f);
 
-	return luaL_fileresult(L, (LSOCK_OPERATION_FAILED(s) && 0 == fclose(p->f)), NULL);
+	return luaL_fileresult(L, (LSOCK_OPERATION_FAILED(closesocket(s)) && 0 == fclose(p->f)), NULL);
 #else
 	return luaL_fileresult(L, (0 == fclose(p->f)), NULL);
 #endif
@@ -1262,19 +1262,7 @@ lsock_shouldblock(lua_State * L)
 static int
 lsock_close(lua_State * L)
 {
-	lsocket s = LSOCK_CHECKSOCK(L, 1);
-
-#ifdef _WIN32
-	if (LSOCK_OPERATION_FAILED(closesocket(s)))
-		return LSOCK_STRERROR(L, "closesocket()");
-#else
-	if (LSOCK_OPERATION_FAILED(close(s)))
-		return LSOCK_STRERROR(L, NULL);
-#endif
-
-	lua_pushboolean(L, 1);
-
-	return 1;
+	return close_stream(L);
 }
 
 /* }}} */
