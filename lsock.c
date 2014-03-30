@@ -1,4 +1,4 @@
-/* compile: gcc -o lsock.{so,c} -shared -fPIC -pedantic -ansi -std=c89 -W -Wall -llua -flto -fstack-protector-all -Os -s */
+/* compile: gcc -o lsock.{so,c} -shared -fPIC -pedantic -std=c89 -W -Wall -Wextra -Werror -llua -fstack-protector-all -Os -s */
 
 /* cross-platform includes */
 #include <sys/types.h>
