@@ -1,14 +1,13 @@
-/* compile: gcc -o lsock.{so,c} -shared -fPIC -pedantic -ansi -std=c89 -W -Wall -llua -lm -ldl -flto -fstack-protector-all -Os -s */
+/* compile: gcc -o lsock.{so,c} -shared -fPIC -pedantic -ansi -std=c89 -W -Wall -llua -flto -fstack-protector-all -Os -s */
 
-#ifndef _POSIX_SOURCE
-#	define _POSIX_SOURCE
-#endif
+/* cross-platform includes */
+#include <sys/types.h>
+#include <errno.h>
+#include <lauxlib.h>
+#include <lualib.h>
 
-#ifndef _GNU_SOURCE
-#	define _GNU_SOURCE
-#endif
-
-#ifdef _WIN32
+/* OS-specific includes and definitions */
+#if _WIN32
 #	pragma comment(lib, "Ws2_32.lib")
 #	define _CRT_SECURE_NO_WARNINGS /* blah!! */
 #	define WIN32_LEAN_AND_MEAN /* avoid MVC stuffs */
@@ -16,7 +15,17 @@
 #	include <winsock2.h>
 #	include <ws2tcpip.h>
 #	include <io.h>             /* _open_osfhandle() / _get_osfhandle() */
-#else
+#elif __APPLE__
+#	include <sys/uio.h>
+#elif __linux
+#	define _POSIX_SOURCE
+#	define _GNU_SOURCE
+#	include <stropts.h>
+#	include <sys/sendfile.h>
+#endif
+
+/* Mac OS X + Linux */
+#ifndef _WIN32
 #	include <arpa/inet.h>
 #	include <sys/socket.h>
 #	include <netdb.h>
@@ -29,18 +38,10 @@
 #	include <string.h>
 #	include <unistd.h>
 #	include <sys/time.h>
-#	include <sys/sendfile.h>
 #	include <fcntl.h>
-#	include <stropts.h>
 #	include <sys/ioctl.h>
 #	include <sys/select.h>
 #endif
-
-#include <errno.h>
-#include <sys/types.h>
-
-#include <lauxlib.h>
-#include <lualib.h>
 
 #define NUL                               '\0'
 #define BZERO(buf, sz)                    memset(buf, NUL, sz)
@@ -55,7 +56,7 @@ typedef SSIZE_T ssize_t;
 typedef unsigned __int32 uint32_t;
 typedef unsigned __int16 uint16_t;
 #else
-typedef int    lsocket;
+typedef int lsocket;
 #endif
 
 #define LSOCK_NEWUDATA(L, sz) BZERO(lua_newuserdata(L, sz), sz)
@@ -1267,20 +1268,158 @@ lsock_close(lua_State * L)
 
 /* }}} */
 
-/* {{{ sockopt() */
-
-enum { SOCKOPT_BOOLEAN, SOCKOPT_NUMBER, SOCKOPT_LINGER, SOCKOPT_INADDR, SOCKOPT_IN6ADDR, SOCKOPT_IFNAM };
+/* {{{ sockopt_boolean() */
 
 static int
-sockopt(lua_State * L)
+sockopt_boolean(lua_State * L)
 {
-	lsocket s      = LSOCK_CHECKSOCK(L, 1);
-	int     level  = luaL_checkint  (L, 2);
-	int     option = luaL_checkint  (L, 3);
-	int     get    = lua_isnone     (L, 4);
+	lsocket s  = LSOCK_CHECKSOCK(L, 1);
+	int level  =   luaL_checkint(L, 2);
+	int option =   luaL_checkint(L, 3);
+	int get    =      lua_isnone(L, 4);
 
-	int opt_type = -1;
+	int value = 0;
+	socklen_t sz = sizeof(value);
 
+	if (get)
+	{
+		if (LSOCK_OPERATION_FAILED(getsockopt(s, level, option, (char *) &value, &sz)))
+			return LSOCK_STRERROR(L, NULL);
+
+		lua_pushboolean(L, value);
+	}
+	else
+	{
+		value = lua_isnumber(L, 4) ? lua_tointeger(L, 4) : lua_toboolean(L, 4);
+
+		if (LSOCK_OPERATION_FAILED(setsockopt(s, level, option, (char *) &value, sz)))
+			return LSOCK_STRERROR(L, NULL);
+	}
+
+	return get;
+}
+
+/* }}} */
+
+/* {{{ sockopt_integer() */
+
+static int
+sockopt_integer(lua_State * L)
+{
+	lsocket s  = LSOCK_CHECKSOCK(L, 1);
+	int level  =   luaL_checkint(L, 2);
+	int option =   luaL_checkint(L, 3);
+	int get    =      lua_isnone(L, 4);
+
+	int value = 0;
+	socklen_t sz = sizeof(value);
+
+	if (get)
+	{
+		if (LSOCK_OPERATION_FAILED(getsockopt(s, level, option, (char *) &value, &sz)))
+			return LSOCK_STRERROR(L, NULL);
+
+		lua_pushnumber(L, value);
+	}
+	else
+	{
+		value = luaL_checkint(L, 4);
+
+		if (LSOCK_OPERATION_FAILED(setsockopt(s, level, option, (char *) &value, sz)))
+			return LSOCK_STRERROR(L, NULL);
+	}
+
+	return get;
+}
+
+/* }}} */
+
+/* {{{ sockopt_linger() */
+
+static int sockopt_linger(lua_State * L)
+{
+	lsocket s  = LSOCK_CHECKSOCK(L, 1);
+	int level  =   luaL_checkint(L, 2);
+	int option =   luaL_checkint(L, 3);
+	int get    =      lua_isnone(L, 4);
+
+	if (get)
+	{
+		struct linger l;
+		socklen_t sz = sizeof(l);
+
+		BZERO(&l, sz);
+
+		if (LSOCK_OPERATION_FAILED(getsockopt(s, level, option, (char *) &l, &sz)))
+			return LSOCK_STRERROR(L, NULL);
+
+		linger_to_table(L, &l);
+	}
+	else
+	{
+		struct linger * l = NULL;
+		socklen_t sz = 0;
+
+		luaL_checktype(L, 4, LUA_TTABLE);
+
+		l  = table_to_linger(L, 4);
+		sz = lua_rawlen(L, -1);
+
+		if (LSOCK_OPERATION_FAILED(setsockopt(s, level, option, (char *) l, sz)))
+			return LSOCK_STRERROR(L, NULL);
+	}
+
+	return get;
+}
+
+/* }}} */
+
+/* {{{ sockopt_ifnam() */
+
+#ifndef _WIN32
+
+static int sockopt_ifnam(lua_State * L)
+{
+	lsocket s  = LSOCK_CHECKSOCK(L, 1);
+	int level  =   luaL_checkint(L, 2);
+	int option =   luaL_checkint(L, 3);
+	int get    =      lua_isnone(L, 4);
+
+	if (get)
+	{
+		char buf[IFNAMSIZ + 1]; /* +1 for safety (this is like ~17 bytes anyway) */
+		socklen_t sz = sizeof(buf);
+
+		BZERO(buf, sizeof(buf));
+
+		if (LSOCK_OPERATION_FAILED(getsockopt(s, level, option, buf, &sz)))
+			return LSOCK_STRERROR(L, NULL);
+
+		lua_pushlstring(L, buf, sz);
+	}
+	else
+	{
+		socklen_t sz = 0;
+
+		const char * value = luaL_checklstring(L, 4, (size_t *) &sz);
+
+		if (LSOCK_OPERATION_FAILED(setsockopt(s, level, option, value, sz)))
+			return LSOCK_STRERROR(L, NULL);
+	}
+
+	return get;
+}
+
+#endif
+
+/* }}} */
+
+enum { SOCKOPT_BOOLEAN, SOCKOPT_INTEGER, SOCKOPT_LINGER, SOCKOPT_INADDR, SOCKOPT_IN6ADDR, SOCKOPT_IFNAM };
+
+/* {{{ option_to_handler() */
+
+static int option_to_handler(const int level, const int option)
+{
 	if (SOL_SOCKET == level)
 	{
 		switch (option)
@@ -1294,12 +1433,13 @@ sockopt(lua_State * L)
 			case SO_DEBUG:
 #ifndef _WIN32
 			case SO_TIMESTAMP:
+#endif
+#ifdef __linux
 			case SO_BSDCOMPAT:
 			case SO_NO_CHECK:
 			case SO_MARK:
 #endif
-				opt_type = SOCKOPT_BOOLEAN;
-				break;
+				return SOCKOPT_BOOLEAN;
 
 			case SO_RCVLOWAT:
 			case SO_RCVTIMEO:
@@ -1309,25 +1449,22 @@ sockopt(lua_State * L)
 			case SO_RCVBUF:
 			case SO_ERROR:
 			case SO_TYPE:
-#ifndef _WIN32
-			case SO_RCVBUFFORCE:
-			case SO_SNDBUFFORCE:
+#ifdef __linux
 			case SO_PRIORITY:
 			case SO_PROTOCOL:
+			case SO_RCVBUFFORCE:
+			case SO_SNDBUFFORCE:
 			case SO_PEEK_OFF:
 			case SO_DOMAIN:
 #endif
-				opt_type = SOCKOPT_NUMBER;
-				break;
+				return SOCKOPT_INTEGER;
 
 			case SO_LINGER:
-				opt_type = SOCKOPT_LINGER;
-				break;
+				return SOCKOPT_LINGER;
 
-#ifndef _WIN32
+#ifdef __linux
 			case SO_BINDTODEVICE:
-				opt_type = SOCKOPT_IFNAM;
-				break;
+				return SOCKOPT_IFNAM;
 #endif
 		}
 	}
@@ -1337,23 +1474,23 @@ sockopt(lua_State * L)
 		{
 			case TCP_MAXSEG:
 #ifndef _WIN32
-			case TCP_KEEPIDLE:
 			case TCP_KEEPINTVL:
 			case TCP_KEEPCNT:
-			case TCP_SYNCNT:
-			case TCP_LINGER2:
-			case TCP_DEFER_ACCEPT: /* NOT A BOOLEAN, number is seconds to wait for data or drop */
-			case TCP_WINDOW_CLAMP:
 #endif
-				opt_type = SOCKOPT_NUMBER;
-				break;
+#ifdef __linux
+			case TCP_WINDOW_CLAMP:
+			case TCP_DEFER_ACCEPT: /* NOT A BOOLEAN, number is seconds to wait for data or drop */
+			case TCP_LINGER2:
+			case TCP_KEEPIDLE:
+			case TCP_SYNCNT:
+#endif
+				return SOCKOPT_INTEGER;
 
 			case TCP_NODELAY:
-#ifndef _WIN32
+#ifdef __linux
 			case TCP_CORK:
 #endif
-				opt_type = SOCKOPT_BOOLEAN;
-				break;
+				return SOCKOPT_BOOLEAN;
 
 			/* maybe handle TCP_INFO at some point */
 		}
@@ -1362,14 +1499,14 @@ sockopt(lua_State * L)
 	{
 		switch (option)
 		{
-#ifndef _WIN32
-			case UDP_CORK:
-#else
+#ifdef _WIN32
 			case UDP_CHECKSUM_COVERAGE:
 			case UDP_NOCHECKSUM:
 #endif
-				opt_type = SOCKOPT_BOOLEAN;
-				break;
+#ifdef __linux
+			case UDP_CORK:
+#endif
+				return SOCKOPT_BOOLEAN;
 		}
 	}
 	else if (IPPROTO_IP == level) /* IPPROTO_IP == SOL_IP */
@@ -1381,27 +1518,28 @@ sockopt(lua_State * L)
 			case IP_MULTICAST_TTL:
 #ifndef _WIN32
 			case IP_RECVTTL:
-			case IP_RECVTOS:
-			case IP_MTU_DISCOVER:
 #endif
-				opt_type = SOCKOPT_NUMBER;
-				break;
+#ifdef __linux
+			case IP_MTU_DISCOVER:
+			case IP_RECVTOS:
+#endif
+				return SOCKOPT_INTEGER;
 
 			case IP_HDRINCL:
-			case IP_PKTINFO:
 			case IP_MULTICAST_LOOP:
 #ifndef _WIN32
-			case IP_RECVERR:
 			case IP_RECVOPTS:
 			case IP_RETOPTS:
+#endif
+#ifdef __linux
+			case IP_PKTINFO:
+			case IP_RECVERR:
 			case IP_ROUTER_ALERT:
 #endif
-				opt_type = SOCKOPT_BOOLEAN;
-				break;
+				return SOCKOPT_BOOLEAN;
 
 			case IP_MULTICAST_IF:
-				opt_type = SOCKOPT_INADDR;
-				break;
+				return SOCKOPT_INADDR;
 		}
 	}
 	else if (IPPROTO_IPV6 == level) /* IPPROTO_IPV6 == SOL_IPV6 */
@@ -1409,141 +1547,70 @@ sockopt(lua_State * L)
 		switch (option)
 		{
 
-			case IPV6_HOPLIMIT:
-			case IPV6_HOPOPTS:
 			case IPV6_MULTICAST_LOOP:
 #ifndef _WIN32
-			case IPV6_DSTOPTS:
-			case IPV6_NEXTHOP:
-			case IPV6_ROUTER_ALERT:
 #endif
-				opt_type = SOCKOPT_BOOLEAN;
-				break;
+#ifdef __linux
+			case IPV6_ROUTER_ALERT:
+			case IPV6_NEXTHOP:
+			case IPV6_HOPLIMIT:
+			case IPV6_DSTOPTS:
+			case IPV6_HOPOPTS:
+#endif
+				return SOCKOPT_BOOLEAN;
 
 			case IPV6_CHECKSUM:
 			case IPV6_MULTICAST_HOPS:
-			case IPV6_PKTINFO:
 			case IPV6_UNICAST_HOPS:
-#ifndef _WIN32
-			case IPV6_ADDRFORM:
+#ifdef __linux
 			case IPV6_AUTHHDR:
+			case IPV6_ADDRFORM:
+			case IPV6_PKTINFO:
 #endif
-				opt_type = SOCKOPT_NUMBER;
-				break;
+				return SOCKOPT_INTEGER;
 		}
 	}
 
-	switch (opt_type)
+	/* unknown level+option combo */
+	return -1;
+}
+
+/* }}} */
+
+/* {{{ sockopt() */
+
+static int
+sockopt(lua_State * L)
+{
+	int level, option, get;
+
+	LSOCK_CHECKSOCK(L, 1);
+
+	level  = luaL_checkint(L, 2);
+	option = luaL_checkint(L, 3);
+	get    =    lua_isnone(L, 4);
+
+	switch (option_to_handler(level, option))
 	{
-		case SOCKOPT_BOOLEAN:
-			{
-				int value = 0;
-				socklen_t sz = sizeof(value);
-
-				if (get)
-				{
-					if (LSOCK_OPERATION_FAILED(getsockopt(s, level, option, (char *) &value, &sz)))
-						return LSOCK_STRERROR(L, NULL);
-
-					lua_pushboolean(L, value);
-				}
-				else
-				{
-					value = lua_toboolean(L, 4);
-
-					if (LSOCK_OPERATION_FAILED(setsockopt(s, level, option, (char *) &value, sz)))
-						return LSOCK_STRERROR(L, NULL);
-				}
-			}
-			break;
-
-		case SOCKOPT_NUMBER:
-			{
-				int value = 0;
-				socklen_t sz = sizeof(value);
-
-				if (get)
-				{
-					if (LSOCK_OPERATION_FAILED(getsockopt(s, level, option, (char *) &value, &sz)))
-						return LSOCK_STRERROR(L, NULL);
-
-					lua_pushnumber(L, value);
-				}
-				else
-				{
-					value = luaL_checkint(L, 4);
-
-					if (LSOCK_OPERATION_FAILED(setsockopt(s, level, option, (char *) &value, sz)))
-						return LSOCK_STRERROR(L, NULL);
-				}
-			}
-			break;
-
-		case SOCKOPT_LINGER:
-			{
-				if (get)
-				{
-					struct linger l;
-					socklen_t sz = sizeof(l);
-
-					BZERO(&l, sz);
-
-					if (LSOCK_OPERATION_FAILED(getsockopt(s, level, option, (char *) &l, &sz)))
-						return LSOCK_STRERROR(L, NULL);
-
-					linger_to_table(L, &l);
-				}
-				else
-				{
-					struct linger * l = NULL;
-					socklen_t sz = 0;
-
-					luaL_checktype(L, 4, LUA_TTABLE);
-
-					l  = table_to_linger(L, 4);
-					sz = lua_rawlen(L, -1);
-
-					if (LSOCK_OPERATION_FAILED(setsockopt(s, level, option, (char *) l, sz)))
-						return LSOCK_STRERROR(L, NULL);
-				}
-			}
-			break;
-
+		case SOCKOPT_BOOLEAN: return sockopt_boolean(L);
+		case SOCKOPT_INTEGER: return sockopt_integer(L);
+		case SOCKOPT_LINGER:  return sockopt_linger(L);
 #ifndef _WIN32
-		case SOCKOPT_IFNAM:
-			{
-				if (get)
-				{
-					char buf[IFNAMSIZ + 1]; /* +1 for safety (this is like ~17 bytes anyway) */
-					socklen_t sz = sizeof(buf);
-
-					BZERO(buf, sizeof(buf));
-
-					if (LSOCK_OPERATION_FAILED(getsockopt(s, level, option, buf, &sz)))
-						return LSOCK_STRERROR(L, NULL);
-
-					lua_pushlstring(L, buf, sz);
-				}
-				else
-				{
-					socklen_t sz = 0;
-
-					const char * value = luaL_checklstring(L, 4, (size_t *) &sz);
-
-					if (LSOCK_OPERATION_FAILED(setsockopt(s, level, option, value, sz)))
-						return LSOCK_STRERROR(L, NULL);
-				}
-			}
-			break;
+		case SOCKOPT_IFNAM:   return sockopt_ifnam(L);
 #endif
-		default:
-			lua_pushnil(L);
-			lua_pushfstring(L, "unknown level or option passed to %ssockopt()", get ? "get" : "set");
-
-			return 2;
 	}
 
-	return get;
+	/* unkown level+option */
+	lua_pushnil(L);
+	lua_pushfstring
+	(
+		L,
+		"unknown level or option passed to %ssockopt(); you can force it with %ssockopt_boolean/integer()..",
+		get ? "get" : "set",
+		get ? "get" : "set"
+	);
+
+	return 2;
 }
 
 /* }}} */
@@ -1572,8 +1639,6 @@ lsock_setsockopt(lua_State * L)
 
 	return sockopt(L);
 }
-
-/* }}} */
 
 /* }}} */
 
@@ -1842,6 +1907,7 @@ lsock_pipe(lua_State * L)
 /* }}} */
 
 #ifndef _WIN32
+/* look into CreatePipe() */
 /* {{{ lsock_socketpair() */
 
 static int
@@ -1872,22 +1938,40 @@ lsock_socketpair(lua_State * L)
 
 /* {{{ lsock_sendfile() */
 
-/* USERS SHOULD SET THE NEW OFFSET OF `in' AFTER SENDFILE()'ING */
+/* look at using TransmitFile() on Windows */
 
 static int
 lsock_sendfile(lua_State * L)
 {
 	ssize_t sent;
 
-	int    out    = LSOCK_CHECKFD(L, 1);
-	int    in     = LSOCK_CHECKFD(L, 2);
+	int    out    =    LSOCK_CHECKFD(L, 1);
+	int    in     =    LSOCK_CHECKFD(L, 2);
+	off_t  offset =   luaL_optnumber(L, 3, 0);
+#ifdef __linux
 	size_t count  = luaL_checknumber(L, 4);
-	off_t  offset = luaL_optnumber(L, 3, 0);
+#endif
+#ifdef __APPLE__
+	off_t count = luaL_checknumber(L, 4);
+#endif
 
+#ifdef __linux
 	sent = sendfile(out, in, lua_isnil(L, 3) ? NULL : &offset, count);
+#endif
+#ifdef __APPLE__
+	/* Differences:
+	** 1) out<->in reversed from Linux sendfile()
+	** 2) NULL for the header/trailer structure (Mac OS X sendfile rocks!)
+	** 3) 0 for flags (future expansion); otherwise EINVAL will be returned */
+	sent = sendfile(in, out, offset, &count, NULL, 0);
+#endif
 
 	if (-1 == sent)
 		return LSOCK_STRERROR(L, NULL);
+
+#ifdef __APPLE__
+	sent = count;
+#endif
 
 	lua_pushnumber(L, sent);
 
@@ -2023,8 +2107,10 @@ luaopen_lsock(lua_State * L)
 	LSOCK_CONST(PF_UNIX     );
 	LSOCK_CONST(PF_UNSPEC   );
 #ifndef _WIN32
-	LSOCK_CONST(PF_IRDA     );
 	LSOCK_CONST(PF_LOCAL    );
+#endif
+#ifdef __linux
+	LSOCK_CONST(PF_IRDA     );
 #endif
 
 	/* address family constants */
@@ -2032,9 +2118,11 @@ luaopen_lsock(lua_State * L)
 	LSOCK_CONST(AF_INET     );
 	LSOCK_CONST(AF_INET6    );
 	LSOCK_CONST(AF_IPX      );
-	LSOCK_CONST(AF_IRDA     );
 	LSOCK_CONST(AF_UNIX     );
 	LSOCK_CONST(AF_UNSPEC   );
+#ifdef __linux
+	LSOCK_CONST(AF_IRDA     );
+#endif
 
 	/* socket type constants */
 	LSOCK_CONST(SOCK_DGRAM    );
@@ -2045,7 +2133,6 @@ luaopen_lsock(lua_State * L)
 
 	/* protocol constants */
 	LSOCK_CONST(IPPROTO_IP      );
-	LSOCK_CONST(IPPROTO_HOPOPTS );
 	LSOCK_CONST(IPPROTO_ICMP    );
 	LSOCK_CONST(IPPROTO_IGMP    );
 	LSOCK_CONST(IPPROTO_TCP     );
@@ -2060,7 +2147,6 @@ luaopen_lsock(lua_State * L)
 	LSOCK_CONST(IPPROTO_AH      );
 	LSOCK_CONST(IPPROTO_ICMPV6  );
 	LSOCK_CONST(IPPROTO_NONE    );
-	LSOCK_CONST(IPPROTO_DSTOPTS );
 	LSOCK_CONST(IPPROTO_PIM     );
 	LSOCK_CONST(IPPROTO_SCTP    );
 	LSOCK_CONST(IPPROTO_RAW     );
@@ -2068,13 +2154,17 @@ luaopen_lsock(lua_State * L)
 #ifndef _WIN32
 	LSOCK_CONST(IPPROTO_IPIP    );
 	LSOCK_CONST(IPPROTO_TP      );
-	LSOCK_CONST(IPPROTO_DCCP    );
 	LSOCK_CONST(IPPROTO_RSVP    );
 	LSOCK_CONST(IPPROTO_GRE     );
-	LSOCK_CONST(IPPROTO_COMP    );
 	LSOCK_CONST(IPPROTO_MTP     );
 	LSOCK_CONST(IPPROTO_ENCAP   );
+#endif
+#ifdef __linux
 	LSOCK_CONST(IPPROTO_UDPLITE );
+	LSOCK_CONST(IPPROTO_COMP    );
+	LSOCK_CONST(IPPROTO_DCCP    );
+	LSOCK_CONST(IPPROTO_HOPOPTS );
+	LSOCK_CONST(IPPROTO_DSTOPTS );
 #endif
 
 
@@ -2118,7 +2208,7 @@ luaopen_lsock(lua_State * L)
 	LSOCK_CONST(AI_NUMERICSERV             );
 	LSOCK_CONST(AI_PASSIVE                 );
 	LSOCK_CONST(AI_V4MAPPED                );
-#ifndef _WIN32
+#ifdef __linux
 	LSOCK_CONST(AI_IDN                     );
 	LSOCK_CONST(AI_IDN_ALLOW_UNASSIGNED    );
 	LSOCK_CONST(AI_IDN_USE_STD3_ASCII_RULES);
@@ -2131,7 +2221,7 @@ luaopen_lsock(lua_State * L)
 	LSOCK_CONST(NI_NOFQDN                  );
 	LSOCK_CONST(NI_NUMERICHOST             );
 	LSOCK_CONST(NI_NUMERICSERV             );
-#ifndef _WIN32
+#ifdef __linux
 	LSOCK_CONST(NI_IDN                     );
 	LSOCK_CONST(NI_IDN_ALLOW_UNASSIGNED    );
 	LSOCK_CONST(NI_IDN_USE_STD3_ASCII_RULES);
@@ -2164,6 +2254,10 @@ luaopen_lsock(lua_State * L)
 	LSOCK_CONST(MSG_TRUNC     );
 	LSOCK_CONST(MSG_WAITALL   ); /* Wait for a full request.  */
 #ifndef _WIN32
+	LSOCK_CONST(MSG_DONTWAIT  ); /* Nonblocking IO.  */
+	LSOCK_CONST(MSG_EOR       ); /* End of record.  */
+#endif
+#ifdef __linux
 	LSOCK_CONST(MSG_FIN       );
 	LSOCK_CONST(MSG_SYN       );
 	LSOCK_CONST(MSG_CONFIRM   ); /* Confirm path validity.  */
@@ -2173,8 +2267,6 @@ luaopen_lsock(lua_State * L)
 	LSOCK_CONST(MSG_MORE      ); /* Sender will send more.  */
 	LSOCK_CONST(MSG_WAITFORONE); /* Wait for at least one packet to return.*/
 	LSOCK_CONST(MSG_FASTOPEN  ); /* Send data in TCP SYN.  */
-	LSOCK_CONST(MSG_DONTWAIT  ); /* Nonblocking IO.  */
-	LSOCK_CONST(MSG_EOR       ); /* End of record.  */
 	LSOCK_CONST(MSG_PROXY     ); /* Supply or ask second address.  */
 	LSOCK_CONST(MSG_TRYHARD   );
 #endif
@@ -2211,28 +2303,31 @@ luaopen_lsock(lua_State * L)
 	LSOCK_CONST(TCP_NODELAY               );
 	LSOCK_CONST(TCP_MAXSEG                );
 #ifndef _WIN32
-	LSOCK_CONST(SO_BINDTODEVICE           );
-	LSOCK_CONST(SO_RCVBUFFORCE            );
-	LSOCK_CONST(SO_SNDBUFFORCE            );
-	LSOCK_CONST(SO_MARK                   );
-	LSOCK_CONST(SO_BSDCOMPAT              );
-	LSOCK_CONST(SO_PEEK_OFF               );
-	LSOCK_CONST(TCP_KEEPIDLE              );
 	LSOCK_CONST(TCP_KEEPINTVL             );
 	LSOCK_CONST(TCP_KEEPCNT               );
-	LSOCK_CONST(TCP_SYNCNT                );
-	LSOCK_CONST(TCP_LINGER2               );
-	LSOCK_CONST(TCP_DEFER_ACCEPT          );
-	LSOCK_CONST(TCP_WINDOW_CLAMP          );
-	LSOCK_CONST(TCP_CORK                  );
-	LSOCK_CONST(UDP_CORK                  );
+	LSOCK_CONST(SO_TIMESTAMP              );
+#endif
+#ifdef __linux
 	LSOCK_CONST(SOL_TCP                   );
 	LSOCK_CONST(SOL_UDP                   );
 	LSOCK_CONST(SOL_IP                    );
 	LSOCK_CONST(SOL_IPV6                  );
-	LSOCK_CONST(SO_TIMESTAMP              );
-	LSOCK_CONST(SO_PROTOCOL               );
+	LSOCK_CONST(UDP_CORK                  );
+	LSOCK_CONST(TCP_CORK                  );
+	LSOCK_CONST(TCP_WINDOW_CLAMP          );
+	LSOCK_CONST(TCP_DEFER_ACCEPT          );
+	LSOCK_CONST(TCP_LINGER2               );
+	LSOCK_CONST(TCP_KEEPIDLE              );
+	LSOCK_CONST(TCP_SYNCNT                );
+	LSOCK_CONST(SO_BINDTODEVICE           );
+	LSOCK_CONST(SO_BSDCOMPAT              );
+	LSOCK_CONST(SO_NO_CHECK               );
+	LSOCK_CONST(SO_MARK                   );
+	LSOCK_CONST(SO_RCVBUFFORCE            );
+	LSOCK_CONST(SO_SNDBUFFORCE            );
 	LSOCK_CONST(SO_PRIORITY               );
+	LSOCK_CONST(SO_PROTOCOL               );
+	LSOCK_CONST(SO_PEEK_OFF               );
 	LSOCK_CONST(SO_DOMAIN                 );
 #endif
 
@@ -2245,25 +2340,29 @@ luaopen_lsock(lua_State * L)
 	LSOCK_CONST(IP_TOS                    );
 	LSOCK_CONST(IP_MULTICAST_TTL          );
 	LSOCK_CONST(IP_HDRINCL                );
-	LSOCK_CONST(IP_PKTINFO                );
 	LSOCK_CONST(IP_MULTICAST_LOOP         );
 	LSOCK_CONST(IP_MULTICAST_IF           );
-	LSOCK_CONST(IPV6_HOPLIMIT             );
-	LSOCK_CONST(IPV6_HOPOPTS              );
 	LSOCK_CONST(IPV6_MULTICAST_LOOP       );
 	LSOCK_CONST(IPV6_CHECKSUM             );
 	LSOCK_CONST(IPV6_MULTICAST_HOPS       );
-	LSOCK_CONST(IPV6_PKTINFO              );
 	LSOCK_CONST(IPV6_UNICAST_HOPS         );
 #ifndef _WIN32
-	LSOCK_CONST(IP_RECVERR                );
 	LSOCK_CONST(IP_RECVOPTS               );
 	LSOCK_CONST(IP_RETOPTS                );
-	LSOCK_CONST(IP_ROUTER_ALERT           );
-	LSOCK_CONST(IPV6_ADDRFORM             );
+#endif
+#ifdef __linux
+	LSOCK_CONST(IPV6_PKTINFO              );
+	LSOCK_CONST(IPV6_HOPOPTS              );
 	LSOCK_CONST(IPV6_AUTHHDR              );
-	LSOCK_CONST(IPV6_NEXTHOP              );
+	LSOCK_CONST(IPV6_ADDRFORM             );
+	LSOCK_CONST(IP_PKTINFO                );
+	LSOCK_CONST(IP_ROUTER_ALERT           );
 	LSOCK_CONST(IPV6_ROUTER_ALERT         );
+	LSOCK_CONST(IP_RECVERR                );
+	LSOCK_CONST(IPV6_NEXTHOP              );
+	LSOCK_CONST(IPV6_HOPLIMIT             );
+	LSOCK_CONST(IP_RECVTOS                );
+	LSOCK_CONST(IP_MTU_DISCOVER           );
 	LSOCK_CONST(IPV6_DSTOPTS              );
 #endif
 
