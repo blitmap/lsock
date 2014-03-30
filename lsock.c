@@ -1,4 +1,6 @@
-/* compile: gcc -o lsock.{so,c} -shared -fPIC -pedantic -std=c89 -W -Wall -Wextra -Werror -llua -fstack-protector-all -Os -s */
+/* compile: gcc -o lsock.{so,c} -shared -fPIC -pedantic -std=c89 -W -Wall -Wextra -Werror -llua -fstack-protector-all -fvisibility=hidden -Os -s */
+
+#define LSOCK_EXPORT __attribute__((visibility("default")))
 
 /* cross-platform includes */
 #include <sys/types.h>
@@ -2086,7 +2088,7 @@ static luaL_Reg lsocklib[] =
 
 #undef LUA_REG
 
-LUALIB_API int
+LSOCK_EXPORT int
 luaopen_lsock(lua_State * L)
 {
 #ifdef _WIN32
@@ -2098,6 +2100,8 @@ luaopen_lsock(lua_State * L)
 #define LSOCK_CONST(C) \
     lua_pushinteger(L, C);  \
     lua_setfield(L, -2, #C)
+
+	lua_newtable(L);
 
 	/* protocol family constants */
 	LSOCK_CONST(PF_APPLETALK);
@@ -2365,6 +2369,11 @@ luaopen_lsock(lua_State * L)
 	LSOCK_CONST(IP_MTU_DISCOVER           );
 	LSOCK_CONST(IPV6_DSTOPTS              );
 #endif
+
+	/* integer constant table is reachable under 2 names */
+	lua_pushvalue(L, -1);
+	lua_setfield(L, -3, "C");
+	lua_setfield(L, -2, "constants");
 
 #undef LSOCK_CONST
 
