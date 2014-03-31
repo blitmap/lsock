@@ -76,14 +76,21 @@ typedef int lsocket;
 #define LSOCK_GAIERROR(L, err  ) lsock_error(L, err,             (char * (*)(int)) &gai_strerror, NULL )
 #define LSOCK_STRFATAL(L, fname) lsock_fatal(L, LSOCK_NET_ERROR, (char * (*)(int)) &strerror,     fname)
 
-#define LSOCK_SETFIELD_NUM(L, table_index, strkey, numval) \
-	do { lua_pushnumber(L, numval); lua_setfield(L, -1 + (table_index), strkey); } while (0)
+/* combination of lua_push*() + lua_setfield() macros */
+#define PUSHFIELD_NUM(L, tidx, key, val) \
+	do { lua_pushnumber(L, val); lua_setfield(L, -1 + (tidx), key); } while (0)
 
-#define LSOCK_SETFIELD_PSTR(L, table_index, strkey, strptrval) \
-	do { lua_pushstring(L, strptrval); lua_setfield(L, -1 + (table_index), strkey); } while (0)
+#define PUSHFIELD_INT(L, tidx, key, val) \
+	do { lua_pushinteger(L, val); lua_setfield(L, -1 + (tidx), key); } while (0)
 
-#define LSOCK_SETFIELD_NSTR(L, table_index, strkey, sptr, slen) \
-	do { lua_pushlstring(L, sptr, slen); lua_setfield(L, -1 + (table_index), strkey); } while (0)
+#define PUSHFIELD_PSTR(L, tidx, key, val) \
+	do { lua_pushstring(L, val); lua_setfield(L, -1 + (tidx), key); } while (0)
+
+#define PUSHFIELD_NSTR(L, tidx, key, val, val_len) \
+	do { lua_pushlstring(L, val, val_len); lua_setfield(L, -1 + (tidx), key); } while (0)
+
+#define PUSHFIELD_LSTR(L, tidx, key, val) \
+	do { lua_pushliteral(L, val); lua_setfield(L, -1 + (tidx), key); } while (0)
 
 #ifdef _WIN32
 #	define LSOCK_OPERATION_FAILED(s) (SOCKET_ERROR == (s))
@@ -460,8 +467,8 @@ timeval_to_table(lua_State * L, struct timeval * t)
 {
 	lua_createtable(L, 0, 2);
 
-	LSOCK_SETFIELD_NUM(L, -1, "tv_sec",  t->tv_sec );
-	LSOCK_SETFIELD_NUM(L, -1, "tv_usec", t->tv_usec);
+	PUSHFIELD_NUM(L, -1, "tv_sec",  t->tv_sec );
+	PUSHFIELD_NUM(L, -1, "tv_usec", t->tv_usec);
 }
 #endif
 
@@ -504,8 +511,8 @@ linger_to_table(lua_State * L, struct linger * l)
 {
 	lua_createtable(L, 0, 2);
 
-	LSOCK_SETFIELD_NUM(L, -1, "l_onoff",  l->l_onoff );
-	LSOCK_SETFIELD_NUM(L, -1, "l_linger", l->l_linger);
+	PUSHFIELD_NUM(L, -1, "l_onoff",  l->l_onoff );
+	PUSHFIELD_NUM(L, -1, "l_linger", l->l_linger);
 }
 
 /* }}} */
@@ -564,10 +571,10 @@ invalid_sockaddr:
 
 	lua_createtable(L, 0, 7); /* 5 fields in sockaddr_in6 + 2 in sockaddr_storage */
 
-	LSOCK_SETFIELD_NUM(L, -1, "ss_family", lsa->ss.ss_family);
-	LSOCK_SETFIELD_NUM(L, -1, "sa_family", lsa->sa.sa_family);
+	PUSHFIELD_NUM(L, -1, "ss_family", lsa->ss.ss_family);
+	PUSHFIELD_NUM(L, -1, "sa_family", lsa->sa.sa_family);
 
-	LSOCK_SETFIELD_NSTR(L, -1, "sa_data", lsa->sa.sa_data, LSOCK_SIZEOF_MEMBER(lsockaddr, sa.sa_data));
+	PUSHFIELD_NSTR(L, -1, "sa_data", lsa->sa.sa_data, LSOCK_SIZEOF_MEMBER(lsockaddr, sa.sa_data));
 
 	switch (lsa->ss.ss_family)
 	{
@@ -577,8 +584,8 @@ invalid_sockaddr:
 
 				BZERO(dst, sizeof(dst));
 
-				LSOCK_SETFIELD_NUM(L, -1, "sin_family", lsa->in.sin_family);
-				LSOCK_SETFIELD_NUM(L, -1, "sin_port",   ntohs(lsa->in.sin_port));
+				PUSHFIELD_NUM(L, -1, "sin_family", lsa->in.sin_family);
+				PUSHFIELD_NUM(L, -1, "sin_port",   ntohs(lsa->in.sin_port));
 
 #ifdef _WIN32
 				if (NULL == InetNtop(AF_INET, &lsa->in.sin_addr, (PWSTR) dst, sizeof(dst)))
@@ -588,7 +595,7 @@ invalid_sockaddr:
 					LSOCK_STRFATAL(L, "inet_ntop()");
 #endif
 
-				LSOCK_SETFIELD_PSTR(L, -1, "sin_addr", dst);
+				PUSHFIELD_PSTR(L, -1, "sin_addr", dst);
 			}
 
 			break;
@@ -599,10 +606,10 @@ invalid_sockaddr:
 
 				BZERO(dst, sizeof(dst));
 
-				LSOCK_SETFIELD_NUM(L, -1, "sin6_family",   lsa->in6.sin6_family         );
-				LSOCK_SETFIELD_NUM(L, -1, "sin6_port",     ntohs(lsa->in6.sin6_port)    );
-				LSOCK_SETFIELD_NUM(L, -1, "sin6_flowinfo", ntohl(lsa->in6.sin6_flowinfo));
-				LSOCK_SETFIELD_NUM(L, -1, "sin6_scope_id", ntohl(lsa->in6.sin6_scope_id));
+				PUSHFIELD_NUM(L, -1, "sin6_family",   lsa->in6.sin6_family         );
+				PUSHFIELD_NUM(L, -1, "sin6_port",     ntohs(lsa->in6.sin6_port)    );
+				PUSHFIELD_NUM(L, -1, "sin6_flowinfo", ntohl(lsa->in6.sin6_flowinfo));
+				PUSHFIELD_NUM(L, -1, "sin6_scope_id", ntohl(lsa->in6.sin6_scope_id));
 
 #ifdef _WIN32
 				if (NULL == InetNtop(AF_INET6, (char *) &lsa->in6.sin6_addr, (PWSTR) dst, sizeof(dst)))
@@ -612,15 +619,15 @@ invalid_sockaddr:
 					LSOCK_STRFATAL(L, "inet_ntop()");
 #endif
 
-				LSOCK_SETFIELD_PSTR(L, -1, "sin6_addr", dst);
+				PUSHFIELD_PSTR(L, -1, "sin6_addr", dst);
 			}
 
 			break;
 
 #ifndef _WIN32
 		case AF_UNIX:
-			LSOCK_SETFIELD_NUM(L, -1, "sun_family", lsa->un.sun_family);
-			LSOCK_SETFIELD_NSTR(L, -1, "sun_path", lsa->un.sun_path, UNIX_PATH_MAX);
+			PUSHFIELD_NUM(L, -1, "sun_family", lsa->un.sun_family);
+			PUSHFIELD_NSTR(L, -1, "sun_path", lsa->un.sun_path, UNIX_PATH_MAX);
 
 			break;
 #endif
@@ -1718,16 +1725,16 @@ lsock_getaddrinfo(lua_State * L)
 		/* allocate for 7-at-most members */
 		lua_createtable(L, 0, 7);
 
-		LSOCK_SETFIELD_NUM(L, -1, "ai_flags",    p->ai_flags   );
-		LSOCK_SETFIELD_NUM(L, -1, "ai_family",   p->ai_family  );
-		LSOCK_SETFIELD_NUM(L, -1, "ai_socktype", p->ai_socktype);
-		LSOCK_SETFIELD_NUM(L, -1, "ai_protocol", p->ai_protocol);
-		LSOCK_SETFIELD_NUM(L, -1, "ai_addrlen",  p->ai_addrlen );
+		PUSHFIELD_NUM(L, -1, "ai_flags",    p->ai_flags   );
+		PUSHFIELD_NUM(L, -1, "ai_family",   p->ai_family  );
+		PUSHFIELD_NUM(L, -1, "ai_socktype", p->ai_socktype);
+		PUSHFIELD_NUM(L, -1, "ai_protocol", p->ai_protocol);
+		PUSHFIELD_NUM(L, -1, "ai_addrlen",  p->ai_addrlen );
 
-		LSOCK_SETFIELD_NSTR(L, -1, "ai_addr", (char *) p->ai_addr, p->ai_addrlen);
+		PUSHFIELD_NSTR(L, -1, "ai_addr", (char *) p->ai_addr, p->ai_addrlen);
 
 		if (NULL != p->ai_canonname)
-			LSOCK_SETFIELD_PSTR(L, -1, "ai_canonname", p->ai_canonname);
+			PUSHFIELD_PSTR(L, -1, "ai_canonname", p->ai_canonname);
 
 		lua_settable(L, -3);
 	}
@@ -2338,6 +2345,32 @@ luaopen_lsock(lua_State * L)
 #endif
 
 #undef PUSH_CONST
+
+	PUSHFIELD_LSTR(L, -1, "INADDR_ANY",             "0.0.0.0"        );
+	PUSHFIELD_LSTR(L, -1, "INADDR_BROADCAST",       "255.255.255.255");
+	PUSHFIELD_LSTR(L, -1, "INADDR_NONE",            "255.255.255.255");
+	PUSHFIELD_LSTR(L, -1, "INADDR_LOOPBACK",        "127.0.0.1"      );
+	PUSHFIELD_LSTR(L, -1, "INADDR_UNSPEC_GROUP",    "224.0.0.0"      );
+	PUSHFIELD_LSTR(L, -1, "INADDR_ALLHOSTS_GROUP",  "224.0.0.1"      );
+	PUSHFIELD_LSTR(L, -1, "INADDR_ALLRTRS_GROUP",   "224.0.0.2"      );
+	PUSHFIELD_LSTR(L, -1, "INADDR_MAX_LOCAL_GROUP", "224.0.0.255"    );
+
+	PUSHFIELD_LSTR(L, -1, "in6addr_any",      "::" );
+	PUSHFIELD_LSTR(L, -1, "in6addr_loopback", "::1");
+
+	/* the _INIT's are just tables to pass to pack_sockaddr */
+	lua_createtable(L, 0, 2);
+	PUSHFIELD_INT(L, -1, "sin6_family", AF_INET6);
+	PUSHFIELD_LSTR(L, -1, "sin6_addr", "::");
+	lua_setfield(L, -2, "IN6ADDR_ANY_INIT");
+
+	lua_createtable(L, 0, 2);
+	PUSHFIELD_INT(L, -1, "sin6_family", AF_INET6);
+	PUSHFIELD_LSTR(L, -1, "sin6_addr", "::1");
+	lua_setfield(L, -2, "IN6ADDR_LOOPBACK_INIT");
+
+	PUSHFIELD_INT(L, -1, "INET_ADDRSTRLEN",  16);
+	PUSHFIELD_INT(L, -1, "INET6_ADDRSTRLEN", 46);
 
 	/* table of constants is reachable under 2 names */
 	lua_pushvalue(L, -1);
