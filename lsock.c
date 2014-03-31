@@ -158,8 +158,6 @@ typedef union
 **			- bytes_available() - return how many bytes can be read (upper limit: most recv() can read)
 **
 ** TODO:
-**			- ioctl()       -- unnecessary?
-**
 **			- htond()       -- only on Windows
 **			- htonf()       -- only on Windows
 **			- htonll()      -- only on Windows
@@ -209,7 +207,7 @@ lsock_fatal(lua_State * L, int err, char * (*errfunc)(int), char * fname)
 /* {{{ lsock_strerror() */
 
 static int
-lsock_strerror(lua_State * L)
+lsock_api_strerror(lua_State * L)
 {
 	lua_pushstring(L, strerror(luaL_checkint(L, 1)));
 
@@ -221,7 +219,7 @@ lsock_strerror(lua_State * L)
 /* {{{ lsock_gai_strerror() */
 
 static int
-lsock_gai_strerror(lua_State * L)
+lsock_api_gai_strerror(lua_State * L)
 {
 	lua_pushstring(L, (char *) gai_strerror(luaL_checkint(L, 1)));
 
@@ -790,7 +788,7 @@ next_member:
 /* {{{ lsock_pack_sockaddr() */
 
 static int
-lsock_pack_sockaddr(lua_State * L)
+lsock_api_pack_sockaddr(lua_State * L)
 {
 	luaL_checktype(L, 1, LUA_TTABLE);
 
@@ -804,7 +802,7 @@ lsock_pack_sockaddr(lua_State * L)
 /* {{{ lsock_unpack_sockaddr() */
 
 static int
-lsock_unpack_sockaddr(lua_State * L)
+lsock_api_unpack_sockaddr(lua_State * L)
 {
 	size_t       l = 0;
 	const char * s = luaL_checklstring(L, 1, &l);
@@ -852,7 +850,7 @@ newfile(lua_State * L)
 /* {{{ lsock_htons() */
 
 static int
-lsock_htons(lua_State * L)
+lsock_api_htons(lua_State * L)
 {
 	lua_Number n = luaL_checknumber(L, 1);
 	uint16_t   s = (uint16_t) n;
@@ -876,7 +874,7 @@ lsock_htons(lua_State * L)
 /* {{{ lsock_ntohs() */
 
 static int
-lsock_ntohs(lua_State * L)
+lsock_api_ntohs(lua_State * L)
 {
 	uint16_t     h = 0;
 	size_t       l = 0;
@@ -901,7 +899,7 @@ lsock_ntohs(lua_State * L)
 /* {{{ lsock_htonl() */
 
 static int
-lsock_htonl(lua_State * L)
+lsock_api_htonl(lua_State * L)
 {
 	lua_Number n = luaL_checknumber(L, 1);
 	uint32_t   l = (uint32_t) n;
@@ -925,7 +923,7 @@ lsock_htonl(lua_State * L)
 /* {{{ lsock_ntohl() */
 
 static int
-lsock_ntohl(lua_State * L)
+lsock_api_ntohl(lua_State * L)
 {
 	uint32_t     h = 0;
 	size_t       l = 0;
@@ -954,7 +952,7 @@ lsock_ntohl(lua_State * L)
 /* {{{ lsock_accept() */
 
 static int
-lsock_accept(lua_State * L)
+lsock_api_accept(lua_State * L)
 {
 	luaL_Stream * fh;
 	lsocket       new_sock;
@@ -983,7 +981,7 @@ lsock_accept(lua_State * L)
 /* {{{ lsock_listen() */
 
 static int
-lsock_listen(lua_State * L)
+lsock_api_listen(lua_State * L)
 {
 	lsocket serv = LSOCK_CHECKSOCK(L, 1);
 	int  backlog = luaL_optinteger(L, 2, 0);
@@ -1003,7 +1001,7 @@ lsock_listen(lua_State * L)
 /* {{{ lsock_bind() */
 
 static int
-lsock_bind(lua_State * L)
+lsock_api_bind(lua_State * L)
 {
 	size_t       sz   = 0;
 	lsocket      serv = LSOCK_CHECKSOCK(L, 1);
@@ -1022,7 +1020,7 @@ lsock_bind(lua_State * L)
 /* {{{ lsock_connect() */
 
 static int
-lsock_connect(lua_State * L)
+lsock_api_connect(lua_State * L)
 {
 	size_t       sz     = 0;
 	lsocket      client = LSOCK_CHECKSOCK(L, 1);
@@ -1041,7 +1039,7 @@ lsock_connect(lua_State * L)
 /* {{{ lsock_getsockname() */
 
 static int
-lsock_getsockname(lua_State * L)
+lsock_api_getsockname(lua_State * L)
 {
 	lsockaddr addr;
 
@@ -1063,7 +1061,7 @@ lsock_getsockname(lua_State * L)
 /* {{{ lsock_getpeername() */
 
 static int
-lsock_getpeername(lua_State * L)
+lsock_api_getpeername(lua_State * L)
 {
 	lsockaddr addr;
 
@@ -1085,7 +1083,7 @@ lsock_getpeername(lua_State * L)
 /* {{{ lsock_sendto() */
 
 static int
-lsock_sendto(lua_State * L)
+lsock_api_sendto(lua_State * L)
 {
 	ssize_t sent;
 
@@ -1118,7 +1116,7 @@ lsock_sendto(lua_State * L)
 /* {{{ lsock_send() */
 
 static int
-lsock_send(lua_State * L)
+lsock_api_send(lua_State * L)
 {
 	int n = lua_gettop(L);
 
@@ -1127,7 +1125,7 @@ lsock_send(lua_State * L)
 	if (n > 3)
 		lua_pop(L, n - 3);
 
-	return lsock_sendto(L);
+	return lsock_api_sendto(L);
 }
 
 /* }}} */
@@ -1135,7 +1133,7 @@ lsock_send(lua_State * L)
 /* {{{ lsock_recvfrom() */
 
 static int
-lsock_recvfrom(lua_State * L)
+lsock_api_recvfrom(lua_State * L)
 {
 	ssize_t gotten;
 
@@ -1170,7 +1168,7 @@ lsock_recvfrom(lua_State * L)
 /* {{{ lsock_recv() */
 
 static int
-lsock_recv(lua_State * L)
+lsock_api_recv(lua_State * L)
 {
 	int n = lua_gettop(L);
 
@@ -1179,7 +1177,7 @@ lsock_recv(lua_State * L)
 	if (n > 3)
 		lua_pop(L, n - 3);
 
-	return lsock_recvfrom(L);
+	return lsock_api_recvfrom(L);
 }
 
 /* }}} */
@@ -1189,7 +1187,7 @@ lsock_recv(lua_State * L)
 /* shutdown(sock, how) -> true  -or-  nil, errno */
 
 static int
-lsock_shutdown(lua_State * L)
+lsock_api_shutdown(lua_State * L)
 {
 	lsocket sock = LSOCK_CHECKSOCK(L, 1);
 	int     how  = luaL_checkint  (L, 2);
@@ -1207,7 +1205,7 @@ lsock_shutdown(lua_State * L)
 /* {{{ lsock_socket() */
 
 static int
-lsock_socket(lua_State * L)
+lsock_api_socket(lua_State * L)
 {
 	luaL_Stream * stream;
 
@@ -1231,7 +1229,7 @@ lsock_socket(lua_State * L)
 /* {{{ lsock_shouldblock() */
 
 static int
-lsock_shouldblock(lua_State * L)
+lsock_api_shouldblock(lua_State * L)
 {
 	lsocket s = LSOCK_CHECKSOCK(L, 1);
 	int     b = lua_isnone(L, 2) ? 1 : lua_toboolean(L, 2);
@@ -1276,7 +1274,7 @@ lsock_shouldblock(lua_State * L)
 /* you can also use io.close()... */
 
 static int
-lsock_close(lua_State * L)
+lsock_api_close(lua_State * L)
 {
 	return close_stream(L);
 }
@@ -1633,7 +1631,7 @@ sockopt(lua_State * L)
 /* {{{ lsock_getsockopt() */
 
 static int
-lsock_getsockopt(lua_State * L)
+lsock_api_getsockopt(lua_State * L)
 {
 	int n = lua_gettop(L);
 
@@ -1648,7 +1646,7 @@ lsock_getsockopt(lua_State * L)
 /* {{{ lsock_setsockopt() */
 
 static int
-lsock_setsockopt(lua_State * L)
+lsock_api_setsockopt(lua_State * L)
 {
 	luaL_checkany(L, 4);
 
@@ -1660,7 +1658,7 @@ lsock_setsockopt(lua_State * L)
 /* {{{ lsock_getaddrinfo() */
 
 static int
-lsock_getaddrinfo(lua_State * L)
+lsock_api_getaddrinfo(lua_State * L)
 {
 	int ret;
 	int i = 1;
@@ -1755,7 +1753,7 @@ lsock_getaddrinfo(lua_State * L)
 /* {{{ lsock_getnameinfo() */
 
 static int
-lsock_getnameinfo(lua_State * L)
+lsock_api_getnameinfo(lua_State * L)
 {
 	int stat;
 
@@ -1786,7 +1784,7 @@ lsock_getnameinfo(lua_State * L)
 enum { R, W, E };
 
 static int
-lsock_select(lua_State * L)
+lsock_api_select(lua_State * L)
 {
 	int x, y, stat;
 
@@ -1870,7 +1868,7 @@ lsock_select(lua_State * L)
 /* note: can be used to get the bytes available
 ** or as a boolean "ready for reading" check */
 static int
-lsock_bytes_available(lua_State * L)
+lsock_api_bytes_available(lua_State * L)
 {
 	lsocket s = LSOCK_CHECKSOCK(L, 1);
 
@@ -1895,7 +1893,7 @@ lsock_bytes_available(lua_State * L)
 /* {{{ lsock_pipe() */
 
 static int
-lsock_pipe(lua_State * L)
+lsock_api_pipe(lua_State * L)
 {
 	lsocket pair[2] = { -1, -1 };
 
@@ -1926,7 +1924,7 @@ lsock_pipe(lua_State * L)
 /* {{{ lsock_socketpair() */
 
 static int
-lsock_socketpair(lua_State * L)
+lsock_api_socketpair(lua_State * L)
 {
 	int pair[2] = { -1, -1 };
 
@@ -1956,7 +1954,7 @@ lsock_socketpair(lua_State * L)
 /* look at using TransmitFile() on Windows */
 
 static int
-lsock_sendfile(lua_State * L)
+lsock_api_sendfile(lua_State * L)
 {
 	ssize_t sent;
 
@@ -2001,7 +1999,7 @@ lsock_sendfile(lua_State * L)
 /* for luasocket-dependant stuff */
 
 static int
-lsock_getfd(lua_State * L)
+lsock_api_getfd(lua_State * L)
 {
 	lua_pushnumber(L, LSOCK_CHECKFD(L, 1));
 
@@ -2050,12 +2048,11 @@ lsock_startup(lua_State * L)
 
 /* }}} */
 
-
 #endif
 
 /* {{{ luaopen_lsock() */
 
-#define LUA_REG(x) { #x, lsock_##x }
+#define LUA_REG(x) { #x, lsock_api_##x }
 
 static luaL_Reg lsocklib[] =
 {
