@@ -17,9 +17,13 @@
 #	include <winsock2.h>
 #	include <ws2tcpip.h>
 #	include <io.h>             /* _open_osfhandle() / _get_osfhandle() */
-#elif __APPLE__
+#endif
+
+#ifdef __APPLE__
 #	include <sys/uio.h>
-#elif __linux
+#endif
+
+#ifdef __linux
 #	define _POSIX_SOURCE
 #	define _GNU_SOURCE
 #	include <stropts.h>
