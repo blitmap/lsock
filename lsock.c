@@ -139,7 +139,7 @@ typedef union
 **			- getaddrinfo()
 **			- getnameinfo()
 **
-**			- bytes_available() - return how many bytes can be read (upper limit: most recv() can read)
+**			- ready_bytes() - return how many bytes can be read (upper limit: most recv() can read)
 **
 ** TODO:
 **			- htond()       -- only on Windows
@@ -1860,12 +1860,12 @@ lsock_api_select(lua_State * L)
 	return 3;
 }
 
-/* {{{ lsock_bytes_available() */
+/* {{{ lsock_ready_bytes() */
 
 /* note: can be used to get the bytes available
 ** or as a boolean "ready for reading" check */
 static int
-lsock_api_bytes_available(lua_State * L)
+lsock_api_ready_bytes(lua_State * L)
 {
 	lsocket s = LSOCK_CHECKSOCK(L, 1);
 
@@ -2056,7 +2056,7 @@ static luaL_Reg lsocklib[] =
 	/* the portable API */
 	LUA_REG(accept),
 	LUA_REG(bind),
-	LUA_REG(bytes_available),
+	LUA_REG(ready_bytes),
 	LUA_REG(shouldblock),
 	LUA_REG(close),
 	LUA_REG(connect),
