@@ -1,14 +1,13 @@
 /* compile: gcc -o lsock.{so,c} -shared -fPIC -pedantic -std=c89 -W -Wall -Wextra -Werror -llua -fstack-protector-all -fvisibility=hidden -Os -s */
 
-#define LSOCK_EXPORT __attribute__((visibility("default")))
-
 /* cross-platform includes */
 #include <sys/types.h>
 #include <errno.h>
 #include <lauxlib.h>
 #include <lualib.h>
 
-/* OS-specific includes and definitions */
+/* platform-specific includes */
+
 #if _WIN32
 #	pragma comment(lib, "Ws2_32.lib")
 #	define _CRT_SECURE_NO_WARNINGS /* blah!! */
@@ -50,13 +49,20 @@
 #	include <sys/select.h>
 #endif
 
-#define NUL                               '\0'
-#define BZERO(buf, sz)                    memset(buf, NUL, sz)
-#define LSOCK_SIZEOF_MEMBER(type, member) sizeof(((type *) NULL)->member)
+/* platform-specific defines */
+#ifdef _WIN32
+#	define EXPOSE_SYMBOL __declspec(dllexport)
+#	define NET_ERRNO WSAGetLastError()
+#else
+#	define EXPOSE_SYMBOL __attribute__((visibility("default")))
+#	define INVALID_SOCKET -1
+#	define NET_ERRNO (errno)
+#	ifndef UNIX_PATH_MAX
+#		define UNIX_PATH_MAX MIN(108, MEMBER_SIZE(struct sockaddr_un, sun_path))
+#	endif
+#endif
 
-#define UNIX_PATH_MAX           LSOCK_SIZEOF_MEMBER(struct sockaddr_un, sun_path)
-#define LSOCK_ARRAY_LENGTH(arr) (sizeof(arr) / sizeof(arr[0]))
-
+/* mapping native types to portable names */
 #ifdef _WIN32
 typedef SOCKET lsocket;
 typedef SSIZE_T ssize_t;
@@ -66,28 +72,25 @@ typedef unsigned __int16 uint16_t;
 typedef int lsocket;
 #endif
 
-#define LSOCK_NEWUDATA(L, sz) BZERO(lua_newuserdata(L, sz), sz)
+#define ZERO_OUT(buf, sz) memset(buf, 0, sz)
+#define MEMBER_SIZE(type, member) sizeof(((type *) NULL)->member)
+#define LENGTH(arr) (sizeof(arr) / sizeof(arr[0]))
+
+#define LSOCK_NEWUDATA(L, sz) ZERO_OUT(lua_newuserdata(L, sz), sz)
 
 #define   LSOCK_CHECKFH(L, index) ((luaL_Stream *) luaL_checkudata(L, index, LUA_FILEHANDLE))
 #define LSOCK_CHECKSOCK(L, index) file_to_sock(L, LSOCK_CHECKFH(L, index)->f)
 #define   LSOCK_CHECKFD(L, index) file_to_fd(L, LSOCK_CHECKFH(L, index)->f)
 
-#define LSOCK_STRERROR(L, fname) lsock_error(L, LSOCK_NET_ERROR, (char * (*)(int)) &strerror,     fname)
+#define LSOCK_STRERROR(L, fname) lsock_error(L, NET_ERRNO, (char * (*)(int)) &strerror,     fname)
 #define LSOCK_GAIERROR(L, err  ) lsock_error(L, err,             (char * (*)(int)) &gai_strerror, NULL )
-#define LSOCK_STRFATAL(L, fname) lsock_fatal(L, LSOCK_NET_ERROR, (char * (*)(int)) &strerror,     fname)
+#define LSOCK_STRFATAL(L, fname) lsock_fatal(L, NET_ERRNO, (char * (*)(int)) &strerror,     fname)
 
-#ifdef _WIN32
-#	define LSOCK_OPERATION_FAILED(s) (SOCKET_ERROR == (s))
-#	define LSOCK_CREATION_FAILED(s)  (INVALID_SOCKET == (s))
-#	define LSOCK_NET_ERROR           WSAGetLastError()
-#else
-#	define LSOCK_OPERATION_FAILED(s) (s < 0)
-#	define LSOCK_CREATION_FAILED(s)  (s < 0)
-#	define LSOCK_NET_ERROR           (errno)
-#endif
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
 
-#define LSOCK_MAX(a, b) ((a) > (b) ? (a) : (b))
-#define LSOCK_MIN(a, b) ((a) < (b) ? (a) : (b))
+#define PUSHFIELD(state, tidx, type, field, v) \
+	do { lua_push ## type(L, v); lua_setfield(L, -1 + (tidx), field); } while (0)
 
 /* including sockaddr_un in this only increases the byte count by 18 */
 typedef union
@@ -101,61 +104,7 @@ typedef union
 #endif
 } lsockaddr;
 
-/*
-** DONE:
-**			- htons()
-**			- htonl()
-**			- ntohs()
-**			- ntohl()
-**
-**			- pack_sockaddr()
-**			- unpack_sockaddr()
-**
-**			- socket()
-**			- bind()
-**			- shouldblock() -- for nonblocking io
-**			- connect()
-**			- listen()
-**			- shutdown()
-**			- recv()     -- wrapper over recvfrom()
-**			- recvfrom()
-**			- send()     -- wrapper over sendto()
-**			- sendto()
-**
-**			- getsockopt()
-**			- setsockopt()
-**
-**			- select() -- I might make an fd_set constructor + helper methods later on
-**
-**			- strerror()
-**			- gai_strerror()
-**
-**			- sendfile()   -- only on Linux
-**			- socketpair() -- only on Linux
-**
-**			- getsockname()
-**			- getpeername()
-**
-**			- getaddrinfo()
-**			- getnameinfo()
-**
-**			- ready_bytes() - return how many bytes can be read (upper limit: most recv() can read)
-**
-** TODO:
-**			- htond()       -- only on Windows
-**			- htonf()       -- only on Windows
-**			- htonll()      -- only on Windows
-**			- ntohd()       -- only on Windows
-**			- ntohf()       -- only on Windows
-**			- ntohll()      -- only on Windows
-*/
-
-/*  {{{ - error stuff - */
-
-/* {{{ lsock_error() */
-
-static int
-lsock_error(lua_State * L, int err, char * (*errfunc)(int), char * fname)
+static int lsock_error(lua_State * L, int err, char * (*errfunc)(int), char * fname)
 {
 	char * msg = errfunc(err);
 
@@ -171,12 +120,7 @@ lsock_error(lua_State * L, int err, char * (*errfunc)(int), char * fname)
 	return 3;
 }
 
-/* }}} */
-
-/* {{{ lsock_fatal() */
-
-static int
-lsock_fatal(lua_State * L, int err, char * (*errfunc)(int), char * fname)
+static int lsock_fatal(lua_State * L, int err, char * (*errfunc)(int), char * fname)
 {
 	char * msg = errfunc(err);
 
@@ -186,46 +130,22 @@ lsock_fatal(lua_State * L, int err, char * (*errfunc)(int), char * fname)
 		return luaL_error(L, "%s: %s", fname, msg);
 }
 
-/* }}} */
-
-/* {{{ lsock_strerror() */
-
-static int
-lsock_api_strerror(lua_State * L)
+static int api_strerror(lua_State * L)
 {
 	lua_pushstring(L, strerror(luaL_checkint(L, 1)));
 
 	return 1;
 }
 
-/* }}} */
-
-/* {{{ lsock_gai_strerror() */
-
-static int
-lsock_api_gai_strerror(lua_State * L)
+static int api_gai_strerror(lua_State * L)
 {
 	lua_pushstring(L, (char *) gai_strerror(luaL_checkint(L, 1)));
 
 	return 1;
 }
 
-/* }}} */
-
-/* }}} */
-
-/* {{{ utility stuff */
-
-#define PUSHFIELD(state, tidx, type, field, v) \
-	do { lua_push ## type(L, v); lua_setfield(L, -1 + (tidx), field); } while (0)
-
-/* }}} */
-
-/* {{{ strij_to_payload() */
-
 /* this is evil, unreadable, and clever; ripped from 5.2 */
-static size_t
-posrelat(ptrdiff_t pos, size_t len)
+static size_t posrelat(ptrdiff_t pos, size_t len)
 {
 	if (pos >= 0)
 		return (size_t) pos;
@@ -235,8 +155,7 @@ posrelat(ptrdiff_t pos, size_t len)
 		return len - ((size_t) -pos) + 1;
 }
 
-static void
-strij_to_payload(lua_State * L, int idx, const char ** s, size_t * count)
+static void strij(lua_State * L, int idx, const char ** s, size_t * count)
 {
 	int t;
 
@@ -262,7 +181,7 @@ strij_to_payload(lua_State * L, int idx, const char ** s, size_t * count)
 
 	/* from here we assume table -- see above argcheck() */
 
-	/* ---- */
+	/* string must be t[1] */
 
 	lua_pushnumber(L, 1);
 	lua_gettable(L, idx);
@@ -270,7 +189,7 @@ strij_to_payload(lua_State * L, int idx, const char ** s, size_t * count)
 	str = luaL_optlstring(L, -1, "", &l);
 	lua_pop(L, 1);
 
-	/* ---- */
+	/* starting_index = t[2] or t.i or 1 */
 
 	lua_pushnumber(L, 2);
 	lua_gettable(L, idx);
@@ -284,7 +203,7 @@ strij_to_payload(lua_State * L, int idx, const char ** s, size_t * count)
 	i = posrelat(luaL_optint(L, -1, 1), 1);
 	lua_pop(L, 1);
 
-	/* ---- */
+	/* ending_index = t[3] or t.j or #('the string') */
 
 	lua_pushnumber(L, 3);
 	lua_gettable(L, idx);
@@ -301,8 +220,8 @@ strij_to_payload(lua_State * L, int idx, const char ** s, size_t * count)
 	/* ---- */
 
 	/* pretty identical to string.sub() here */
-	i = LSOCK_MAX(i, 1);
-	j = LSOCK_MIN(j, l);
+	i = MAX(i, 1);
+	j = MIN(j, l);
 
 	/* string.sub('abcdefghij', -4, -6) -> string.sub('abcdefghij', 7, 5) -> ''
 	** we are asserting that i comes before j */
@@ -313,18 +232,7 @@ strij_to_payload(lua_State * L, int idx, const char ** s, size_t * count)
 	*count = (j   - i) + 1;
 }
 
-/* }}} */
-
-/* }}} */
-
-/* {{{ - FILE * <-> fd <-> SOCKET stuff - */
-
-/* going to and from SOCKET and fd in Windows: _open_osfhandle()/_get_osfhandle() */
-
-/* {{{ file_to_fd() */
-
-static int
-file_to_fd(lua_State * L, FILE * stream)
+static int file_to_fd(lua_State * L, FILE * stream)
 {
 	int fd = -1;
 
@@ -344,12 +252,7 @@ file_to_fd(lua_State * L, FILE * stream)
 	return fd;
 }
 
-/* }}} */
-
-/* {{{ fd_to_file() */
-
-static FILE *
-fd_to_file(lua_State * L, int fd, char * mode)
+static FILE * fd_to_file(lua_State * L, int fd, char * mode)
 {
 	FILE * stream = NULL;
 
@@ -372,12 +275,7 @@ fd_to_file(lua_State * L, int fd, char * mode)
 	return stream;
 }
 
-/* }}} */
-
-/* {{{ sock_to_fd() */
-
-static int
-sock_to_fd(lua_State * L, lsocket sock)
+static int sock_to_fd(lua_State * L, lsocket sock)
 {
 
 #ifdef _WIN32
@@ -397,12 +295,7 @@ sock_to_fd(lua_State * L, lsocket sock)
 
 }
 
-/* }}} */
-
-/* {{{ fd_to_sock() */
-
-static lsocket
-fd_to_sock(lua_State * L, int fd)
+static lsocket fd_to_sock(lua_State * L, int fd)
 {
 
 #ifdef _WIN32
@@ -421,37 +314,18 @@ fd_to_sock(lua_State * L, int fd)
 
 }
 
-/* }}} */
-
-/* {{{ file_to_sock() */
-
-static lsocket
-file_to_sock(lua_State * L, FILE * stream)
+static lsocket file_to_sock(lua_State * L, FILE * stream)
 {
 	/* wheee shortness. */
 	return fd_to_sock(L, file_to_fd(L, stream));
 }
 
-/* }}} */
 
-/* {{{ sock_to_file() */
-
-static FILE *
-sock_to_file(lua_State * L, lsocket sock, char * mode)
+static FILE * sock_to_file(lua_State * L, lsocket sock, char * mode)
 {
-	/* \o/ \o| |o/ \o/ \o| |o/ \o/ */
 	return fd_to_file(L, sock_to_fd(L, sock), mode);
 }
 
-/* }}} */
-
-/* }}} */
-
-/* {{{ - table <-> structure stuff - */
-
-/* {{{ timeval_to_table() */
-
-/* not currently used.... */
 #if 0
 static void
 timeval_to_table(lua_State * L, struct timeval * t)
@@ -463,12 +337,7 @@ timeval_to_table(lua_State * L, struct timeval * t)
 }
 #endif
 
-/* }}} */
-
-/* {{{ table_to_timeval() */
-
-static struct timeval *
-table_to_timeval(lua_State * L, int idx)
+static struct timeval * table_to_timeval(lua_State * L, int idx)
 {
 	struct timeval * t;
 
@@ -493,12 +362,7 @@ table_to_timeval(lua_State * L, int idx)
 	return t;
 }
 
-/* }}} */
-
-/* {{{ linger_to_table() */
-
-static void
-linger_to_table(lua_State * L, struct linger * l)
+static void linger_to_table(lua_State * L, struct linger * l)
 {
 	lua_createtable(L, 0, 2);
 
@@ -506,12 +370,7 @@ linger_to_table(lua_State * L, struct linger * l)
 	PUSHFIELD(L, -1, unsigned, "l_linger", l->l_linger);
 }
 
-/* }}} */
-
-/* {{{ table_to_linger() */
-
-static struct linger *
-table_to_linger(lua_State * L, int idx)
+static struct linger * table_to_linger(lua_State * L, int idx)
 {
 	struct linger * l;
 
@@ -536,16 +395,11 @@ table_to_linger(lua_State * L, int idx)
 	return l;
 }
 
-/* }}} */
-
-/* {{{ sockaddr_to_table() */
-
-static int
-sockaddr_to_table(lua_State * L, const char * sa, size_t lsa_sz)
+static int sockaddr_to_table(lua_State * L, const char * sa, size_t lsa_sz)
 {
 	lsockaddr * lsa = (lsockaddr *) sa;
 
-	if (lsa_sz < LSOCK_SIZEOF_MEMBER(struct sockaddr, sa_family))
+	if (lsa_sz < MEMBER_SIZE(struct sockaddr, sa_family))
 		return 0;
 
 	switch (lsa->sa.sa_family)
@@ -565,7 +419,7 @@ invalid_sockaddr:
 	PUSHFIELD(L, -1, number, "ss_family", lsa->ss.ss_family);
 	PUSHFIELD(L, -1, number, "sa_family", lsa->sa.sa_family);
 
-	lua_pushlstring(L, lsa->sa.sa_data, LSOCK_SIZEOF_MEMBER(lsockaddr, sa.sa_data));
+	lua_pushlstring(L, lsa->sa.sa_data, MEMBER_SIZE(lsockaddr, sa.sa_data));
 	lua_setfield(L, -2, "sa_data");
 
 	switch (lsa->ss.ss_family)
@@ -574,7 +428,7 @@ invalid_sockaddr:
 			{
 				char dst[INET_ADDRSTRLEN];
 
-				BZERO(dst, sizeof(dst));
+				ZERO_OUT(dst, sizeof(dst));
 
 				PUSHFIELD(L, -1, number, "sin_family", lsa->in.sin_family);
 				PUSHFIELD(L, -1, number, "sin_port",   lsa->in.sin_port);
@@ -596,7 +450,7 @@ invalid_sockaddr:
 			{
 				char dst[INET6_ADDRSTRLEN];
 
-				BZERO(dst, sizeof(dst));
+				ZERO_OUT(dst, sizeof(dst));
 
 				PUSHFIELD(L, -1, number, "sin6_family",   lsa->in6.sin6_family         );
 				PUSHFIELD(L, -1, number, "sin6_port",     ntohs(lsa->in6.sin6_port)    );
@@ -630,11 +484,8 @@ invalid_sockaddr:
 	return 1;
 }
 
-/* }}} */
 
-/* {{{ table_to_sockaddr() */
-
-static char * members[] =
+static char * sockaddr_members[] =
 {
 	"ss_family",
 	"sa_family",   "sa_data",
@@ -645,7 +496,7 @@ static char * members[] =
 #endif
 };
 
-enum SOCKADDR_FIELDS
+enum
 {
 	SS_FAMILY,
 	SA_FAMILY,   SA_DATA,
@@ -654,21 +505,20 @@ enum SOCKADDR_FIELDS
 	SUN_FAMILY,  SUN_PATH
 };
 
-static const char *
-table_to_sockaddr(lua_State * L, int idx)
+static const char * table_to_sockaddr(lua_State * L, int idx)
 {
 	unsigned int i;
 
 	size_t out_sz = 0;
 	lsockaddr lsa;
 
-	BZERO(&lsa, sizeof(lsa));
+	ZERO_OUT(&lsa, sizeof(lsa));
 
 	idx = lua_absindex(L, idx);
 
-	for (i = 0; i < LSOCK_ARRAY_LENGTH(members); i++)
+	for (i = 0; i < LENGTH(sockaddr_members); i++)
 	{
-		lua_getfield(L, idx, members[i]);
+		lua_getfield(L, idx, sockaddr_members[i]);
 
 		if (lua_isnil(L, -1))
 			goto next_member;
@@ -705,13 +555,13 @@ table_to_sockaddr(lua_State * L, int idx)
 					if (i == SA_DATA)
 					{
 						dst = &lsa.sa.sa_data;
-						sz  = LSOCK_MAX(LSOCK_SIZEOF_MEMBER(struct sockaddr, sa_data), sz); /* should be LSOCK_MAX(14, l) */
+						sz  = MAX(MEMBER_SIZE(struct sockaddr, sa_data), sz); /* should be MAX(14, l) */
 					}
 #ifndef _WIN32
 					else
 					{
 						dst = &lsa.un.sun_path;
-						sz  = LSOCK_MAX(UNIX_PATH_MAX, sz); /* should be LSOCK_MAX(108, l) */
+						sz  = MAX(UNIX_PATH_MAX, sz); /* should be MAX(108, l) */
 					}
 #endif
 
@@ -779,12 +629,8 @@ next_member:
 	return lua_pushlstring(L, (char *) &lsa, out_sz);
 }
 
-/* }}} */
 
-/* {{{ lsock_pack_sockaddr() */
-
-static int
-lsock_api_pack_sockaddr(lua_State * L)
+static int api_pack_sockaddr(lua_State * L)
 {
 	luaL_checktype(L, 1, LUA_TTABLE);
 
@@ -793,12 +639,7 @@ lsock_api_pack_sockaddr(lua_State * L)
 	return 1;
 }
 
-/* }}} */
-
-/* {{{ lsock_unpack_sockaddr() */
-
-static int
-lsock_api_unpack_sockaddr(lua_State * L)
+static int api_unpack_sockaddr(lua_State * L)
 {
 	size_t       l = 0;
 	const char * s = luaL_checklstring(L, 1, &l);
@@ -806,28 +647,21 @@ lsock_api_unpack_sockaddr(lua_State * L)
 	return sockaddr_to_table(L, s, l);
 }
 
-/* }}} */
-
-/* }}} */
-
-/* {{{ lsock_newfile(): based directly on: newprefile() & newfile() from Lua 5.2 sources */
-
-static int
-close_stream(lua_State * L)
+static int close_stream(lua_State * L)
 {
 	luaL_Stream * p = LSOCK_CHECKFH(L, 1);
 
 #ifdef _WIN32
 	SOCKET s = file_to_sock(p->f);
 
-	return luaL_fileresult(L, (LSOCK_OPERATION_FAILED(closesocket(s)) && 0 == fclose(p->f)), NULL);
+	return luaL_fileresult(L, (closesocket(s) && 0 == fclose(p->f)), NULL);
 #else
 	return luaL_fileresult(L, (0 == fclose(p->f)), NULL);
 #endif
 }
 
-static luaL_Stream *
-newfile(lua_State * L)
+/* based directly on: newprefile() & newfile() from Lua 5.2 sources */
+static luaL_Stream * newfile(lua_State * L)
 {
 	luaL_Stream * p = (luaL_Stream *) LSOCK_NEWUDATA(L, sizeof(luaL_Stream));
 
@@ -839,14 +673,8 @@ newfile(lua_State * L)
 	return p;
 }
 
-/* }}} */
 
-/* {{{ network <-> host byte order stuff */
-
-/* {{{ lsock_htons() */
-
-static int
-lsock_api_htons(lua_State * L)
+static int api_htons(lua_State * L)
 {
 	lua_Number n = luaL_checknumber(L, 1);
 	uint16_t   s = (uint16_t) n;
@@ -865,12 +693,7 @@ lsock_api_htons(lua_State * L)
 	return 1;
 }
 
-/* }}} */
-
-/* {{{ lsock_ntohs() */
-
-static int
-lsock_api_ntohs(lua_State * L)
+static int api_ntohs(lua_State * L)
 {
 	uint16_t     h = 0;
 	size_t       l = 0;
@@ -890,12 +713,7 @@ lsock_api_ntohs(lua_State * L)
 	return 1;
 }
 
-/* }}} */
-
-/* {{{ lsock_htonl() */
-
-static int
-lsock_api_htonl(lua_State * L)
+static int api_htonl(lua_State * L)
 {
 	lua_Number n = luaL_checknumber(L, 1);
 	uint32_t   l = (uint32_t) n;
@@ -914,12 +732,7 @@ lsock_api_htonl(lua_State * L)
 	return 1;
 }
 
-/* }}} */
-
-/* {{{ lsock_ntohl() */
-
-static int
-lsock_api_ntohl(lua_State * L)
+static int api_ntohl(lua_State * L)
 {
 	uint32_t     h = 0;
 	size_t       l = 0;
@@ -939,16 +752,7 @@ lsock_api_ntohl(lua_State * L)
 	return 1;
 }
 
-/* }}} */
-
-/* }}} */
-
-/* {{{ - socket operations - */
-
-/* {{{ lsock_accept() */
-
-static int
-lsock_api_accept(lua_State * L)
+static int api_accept(lua_State * L)
 {
 	luaL_Stream * fh;
 	lsocket       new_sock;
@@ -957,11 +761,11 @@ lsock_api_accept(lua_State * L)
 	lsocket       serv = LSOCK_CHECKSOCK(L, 1);
 	socklen_t     sz   = sizeof(lsockaddr);
 
-	BZERO(&info, sizeof(info));
+	ZERO_OUT(&info, sizeof(info));
 
 	new_sock = accept(serv, (struct sockaddr *) &info, &sz);
 
-	if (LSOCK_CREATION_FAILED(new_sock))
+	if (INVALID_SOCKET == new_sock)
 		return LSOCK_STRERROR(L, NULL);
 
 	fh = newfile(L);
@@ -972,19 +776,14 @@ lsock_api_accept(lua_State * L)
 	return 2;
 }
 
-/* }}} */
-
-/* {{{ lsock_listen() */
-
-static int
-lsock_api_listen(lua_State * L)
+static int api_listen(lua_State * L)
 {
 	lsocket serv = LSOCK_CHECKSOCK(L, 1);
 	int  backlog = luaL_optinteger(L, 2, 0);
 
 	/* a backlog of zero hints the implementation
 	** to set the ideal connect queue size */
-	if (LSOCK_OPERATION_FAILED(listen(serv, backlog)))
+	if (listen(serv, backlog))
 		return LSOCK_STRERROR(L, NULL);
 
 	lua_pushboolean(L, 1);
@@ -992,18 +791,13 @@ lsock_api_listen(lua_State * L)
 	return 1;
 }
 
-/* }}} */
-
-/* {{{ lsock_bind() */
-
-static int
-lsock_api_bind(lua_State * L)
+static int api_bind(lua_State * L)
 {
 	size_t       sz   = 0;
 	lsocket      serv = LSOCK_CHECKSOCK(L, 1);
 	const char * addr = luaL_checklstring(L, 2, &sz);
 
-	if (LSOCK_OPERATION_FAILED(bind(serv, (struct sockaddr *) addr, sz)))
+	if (bind(serv, (struct sockaddr *) addr, sz))
 		return LSOCK_STRERROR(L, NULL);
 
 	lua_pushboolean(L, 1);
@@ -1011,18 +805,13 @@ lsock_api_bind(lua_State * L)
 	return 1;
 }
 
-/* }}} */
-
-/* {{{ lsock_connect() */
-
-static int
-lsock_api_connect(lua_State * L)
+static int api_connect(lua_State * L)
 {
 	size_t       sz     = 0;
 	lsocket      client = LSOCK_CHECKSOCK(L, 1);
 	const char * addr   = luaL_checklstring(L, 2, &sz);
 
-	if (LSOCK_OPERATION_FAILED(connect(client, (struct sockaddr *) addr, sz)))
+	if (connect(client, (struct sockaddr *) addr, sz))
 		return LSOCK_STRERROR(L, NULL);
 
 	lua_pushboolean(L, 1);
@@ -1030,21 +819,16 @@ lsock_api_connect(lua_State * L)
 	return 1;
 }
 
-/* }}} */
-
-/* {{{ lsock_getsockname() */
-
-static int
-lsock_api_getsockname(lua_State * L)
+static int api_getsockname(lua_State * L)
 {
 	lsockaddr addr;
 
 	lsocket    s = LSOCK_CHECKSOCK(L, 1);
 	socklen_t sz = sizeof(addr);
 
-	BZERO(&addr, sizeof(addr));
+	ZERO_OUT(&addr, sizeof(addr));
 
-	if (LSOCK_OPERATION_FAILED(getsockname(s, (struct sockaddr *) &addr, &sz)))
+	if (getsockname(s, (struct sockaddr *) &addr, &sz))
 		return LSOCK_STRERROR(L, NULL);
 
 	lua_pushlstring(L, (char *) &addr, sz);
@@ -1052,21 +836,16 @@ lsock_api_getsockname(lua_State * L)
 	return 1;
 }
 
-/* }}} */
-
-/* {{{ lsock_getpeername() */
-
-static int
-lsock_api_getpeername(lua_State * L)
+static int api_getpeername(lua_State * L)
 {
 	lsockaddr addr;
 
 	lsocket    s = LSOCK_CHECKSOCK(L, 1);
 	socklen_t sz = sizeof(addr);
 
-	BZERO(&addr, sizeof(addr));
+	ZERO_OUT(&addr, sizeof(addr));
 
-	if (LSOCK_OPERATION_FAILED(getpeername(s, (struct sockaddr *) &addr, &sz)))
+	if (getpeername(s, (struct sockaddr *) &addr, &sz))
 		return LSOCK_STRERROR(L, NULL);
 
 	lua_pushlstring(L, (char *) &addr, sz);
@@ -1074,12 +853,7 @@ lsock_api_getpeername(lua_State * L)
 	return 1;
 }
 
-/* }}} */
-
-/* {{{ lsock_sendto() */
-
-static int
-lsock_api_sendto(lua_State * L)
+static int api_sendto(lua_State * L)
 {
 	ssize_t sent;
 
@@ -1092,14 +866,14 @@ lsock_api_sendto(lua_State * L)
 	const char * sa;
 
 	lsocket s = LSOCK_CHECKSOCK(L, 1);
-	strij_to_payload(L, 2, &data, &data_len);
+	strij(L, 2, &data, &data_len);
 	flags = luaL_checkint(L, 3);
 
 	sa = luaL_optlstring(L, 4, "", &sa_len);
 
 	sent = sendto(s, data, data_len, flags, (struct sockaddr *) &sa, sa_len);
 
-	if (LSOCK_OPERATION_FAILED(sent))
+	if (sent < 0)
 		return LSOCK_STRERROR(L, NULL);
 
 	lua_pushnumber(L, sent);
@@ -1107,12 +881,7 @@ lsock_api_sendto(lua_State * L)
 	return 1;
 }
 
-/* }}} */
-
-/* {{{ lsock_send() */
-
-static int
-lsock_api_send(lua_State * L)
+static int api_send(lua_State * L)
 {
 	int n = lua_gettop(L);
 
@@ -1121,15 +890,10 @@ lsock_api_send(lua_State * L)
 	if (n > 3)
 		lua_pop(L, n - 3);
 
-	return lsock_api_sendto(L);
+	return api_sendto(L);
 }
 
-/* }}} */
-
-/* {{{ lsock_recvfrom() */
-
-static int
-lsock_api_recvfrom(lua_State * L)
+static int api_recvfrom(lua_State * L)
 {
 	ssize_t gotten;
 
@@ -1147,11 +911,11 @@ lsock_api_recvfrom(lua_State * L)
 
 	buf = luaL_buffinitsize(L, &B, buflen);
 
-	BZERO(buf, buflen); /* a must! */
+	ZERO_OUT(buf, buflen); /* a must! */
 
 	gotten = recvfrom(s, buf, buflen, flags, (struct sockaddr *) from, &from_len);
 
-	if (LSOCK_OPERATION_FAILED(gotten))
+	if (gotten < 0)
 		return LSOCK_STRERROR(L, NULL);
 
 	luaL_pushresultsize(&B, gotten);
@@ -1159,12 +923,7 @@ lsock_api_recvfrom(lua_State * L)
 	return 1; /* success! */
 }
 
-/* }}} */
-
-/* {{{ lsock_recv() */
-
-static int
-lsock_api_recv(lua_State * L)
+static int api_recv(lua_State * L)
 {
 	int n = lua_gettop(L);
 
@@ -1173,22 +932,15 @@ lsock_api_recv(lua_State * L)
 	if (n > 3)
 		lua_pop(L, n - 3);
 
-	return lsock_api_recvfrom(L);
+	return api_recvfrom(L);
 }
 
-/* }}} */
-
-/* {{{ lsock_shutdown() */
-
-/* shutdown(sock, how) -> true  -or-  nil, errno */
-
-static int
-lsock_api_shutdown(lua_State * L)
+static int api_shutdown(lua_State * L)
 {
 	lsocket sock = LSOCK_CHECKSOCK(L, 1);
 	int     how  = luaL_checkint  (L, 2);
 
-	if (LSOCK_OPERATION_FAILED(shutdown(sock, how)))
+	if (shutdown(sock, how))
 		return LSOCK_STRERROR(L, NULL);
 
 	lua_pushboolean(L, 1);
@@ -1196,12 +948,7 @@ lsock_api_shutdown(lua_State * L)
 	return 1;
 }
 
-/* }}} */
-
-/* {{{ lsock_socket() */
-
-static int
-lsock_api_socket(lua_State * L)
+static int api_socket(lua_State * L)
 {
 	luaL_Stream * stream;
 
@@ -1211,7 +958,7 @@ lsock_api_socket(lua_State * L)
 
 	lsocket new_sock = socket(domain, type, protocol);
 
-	if (LSOCK_CREATION_FAILED(new_sock))
+	if (INVALID_SOCKET == new_sock)
 		return LSOCK_STRERROR(L, NULL);
 
 	stream    = newfile(L);
@@ -1220,12 +967,7 @@ lsock_api_socket(lua_State * L)
 	return 1;
 }
 
-/* }}} */
-
-/* {{{ lsock_shouldblock() */
-
-static int
-lsock_api_shouldblock(lua_State * L)
+static int api_should_block(lua_State * L)
 {
 	lsocket s = LSOCK_CHECKSOCK(L, 1);
 	int     b = lua_isnone(L, 2) ? 1 : lua_toboolean(L, 2);
@@ -1263,24 +1005,13 @@ lsock_api_shouldblock(lua_State * L)
 	return 1;
 }
 
-/* }}} */
-
-/* {{{ lsock_close() */
-
 /* you can also use io.close()... */
-
-static int
-lsock_api_close(lua_State * L)
+static int api_close(lua_State * L)
 {
 	return close_stream(L);
 }
 
-/* }}} */
-
-/* {{{ sockopt_boolean() */
-
-static int
-sockopt_boolean(lua_State * L)
+static int sockopt_boolean(lua_State * L)
 {
 	lsocket s  = LSOCK_CHECKSOCK(L, 1);
 	int level  =   luaL_checkint(L, 2);
@@ -1292,7 +1023,7 @@ sockopt_boolean(lua_State * L)
 
 	if (get)
 	{
-		if (LSOCK_OPERATION_FAILED(getsockopt(s, level, option, (char *) &value, &sz)))
+		if (getsockopt(s, level, option, (char *) &value, &sz))
 			return LSOCK_STRERROR(L, NULL);
 
 		lua_pushboolean(L, value);
@@ -1301,19 +1032,14 @@ sockopt_boolean(lua_State * L)
 	{
 		value = lua_isnumber(L, 4) ? lua_tointeger(L, 4) : lua_toboolean(L, 4);
 
-		if (LSOCK_OPERATION_FAILED(setsockopt(s, level, option, (char *) &value, sz)))
+		if (setsockopt(s, level, option, (char *) &value, sz))
 			return LSOCK_STRERROR(L, NULL);
 	}
 
 	return get;
 }
 
-/* }}} */
-
-/* {{{ sockopt_integer() */
-
-static int
-sockopt_integer(lua_State * L)
+static int sockopt_integer(lua_State * L)
 {
 	lsocket s  = LSOCK_CHECKSOCK(L, 1);
 	int level  =   luaL_checkint(L, 2);
@@ -1325,7 +1051,7 @@ sockopt_integer(lua_State * L)
 
 	if (get)
 	{
-		if (LSOCK_OPERATION_FAILED(getsockopt(s, level, option, (char *) &value, &sz)))
+		if (getsockopt(s, level, option, (char *) &value, &sz))
 			return LSOCK_STRERROR(L, NULL);
 
 		lua_pushnumber(L, value);
@@ -1334,16 +1060,12 @@ sockopt_integer(lua_State * L)
 	{
 		value = luaL_checkint(L, 4);
 
-		if (LSOCK_OPERATION_FAILED(setsockopt(s, level, option, (char *) &value, sz)))
+		if (setsockopt(s, level, option, (char *) &value, sz))
 			return LSOCK_STRERROR(L, NULL);
 	}
 
 	return get;
 }
-
-/* }}} */
-
-/* {{{ sockopt_linger() */
 
 static int sockopt_linger(lua_State * L)
 {
@@ -1357,9 +1079,9 @@ static int sockopt_linger(lua_State * L)
 		struct linger l;
 		socklen_t sz = sizeof(l);
 
-		BZERO(&l, sz);
+		ZERO_OUT(&l, sz);
 
-		if (LSOCK_OPERATION_FAILED(getsockopt(s, level, option, (char *) &l, &sz)))
+		if (getsockopt(s, level, option, (char *) &l, &sz))
 			return LSOCK_STRERROR(L, NULL);
 
 		linger_to_table(L, &l);
@@ -1374,16 +1096,12 @@ static int sockopt_linger(lua_State * L)
 		l  = table_to_linger(L, 4);
 		sz = lua_rawlen(L, -1);
 
-		if (LSOCK_OPERATION_FAILED(setsockopt(s, level, option, (char *) l, sz)))
+		if (setsockopt(s, level, option, (char *) l, sz))
 			return LSOCK_STRERROR(L, NULL);
 	}
 
 	return get;
 }
-
-/* }}} */
-
-/* {{{ sockopt_ifnam() */
 
 #ifndef _WIN32
 
@@ -1399,9 +1117,9 @@ static int sockopt_ifnam(lua_State * L)
 		char buf[IFNAMSIZ + 1]; /* +1 for safety (this is like ~17 bytes anyway) */
 		socklen_t sz = sizeof(buf);
 
-		BZERO(buf, sizeof(buf));
+		ZERO_OUT(buf, sizeof(buf));
 
-		if (LSOCK_OPERATION_FAILED(getsockopt(s, level, option, buf, &sz)))
+		if (getsockopt(s, level, option, buf, &sz))
 			return LSOCK_STRERROR(L, NULL);
 
 		lua_pushlstring(L, buf, sz);
@@ -1412,7 +1130,7 @@ static int sockopt_ifnam(lua_State * L)
 
 		const char * value = luaL_checklstring(L, 4, (size_t *) &sz);
 
-		if (LSOCK_OPERATION_FAILED(setsockopt(s, level, option, value, sz)))
+		if (setsockopt(s, level, option, value, sz))
 			return LSOCK_STRERROR(L, NULL);
 	}
 
@@ -1421,11 +1139,7 @@ static int sockopt_ifnam(lua_State * L)
 
 #endif
 
-/* }}} */
-
 enum { SOCKOPT_BOOLEAN, SOCKOPT_INTEGER, SOCKOPT_LINGER, SOCKOPT_INADDR, SOCKOPT_IN6ADDR, SOCKOPT_IFNAM };
-
-/* {{{ option_to_handler() */
 
 static int option_to_handler(const int level, const int option)
 {
@@ -1477,7 +1191,7 @@ static int option_to_handler(const int level, const int option)
 #endif
 		}
 	}
-	else if (IPPROTO_TCP == level) /* IPPROTO_TCP == SOL_TCP */
+	else if (IPPROTO_TCP == level) /* SOL_TCP */
 	{
 		switch (option)
 		{
@@ -1488,7 +1202,7 @@ static int option_to_handler(const int level, const int option)
 #endif
 #ifdef __linux
 			case TCP_WINDOW_CLAMP:
-			case TCP_DEFER_ACCEPT: /* NOT A BOOLEAN, number is seconds to wait for data or drop */
+			case TCP_DEFER_ACCEPT: /* NOT A BOOLEAN, # of seconds to wait for data before drop */
 			case TCP_LINGER2:
 			case TCP_KEEPIDLE:
 			case TCP_SYNCNT:
@@ -1504,7 +1218,7 @@ static int option_to_handler(const int level, const int option)
 			/* maybe handle TCP_INFO at some point */
 		}
 	}
-	else if (IPPROTO_UDP == level) /* IPPROTO_UDP == SOL_UDP */
+	else if (IPPROTO_UDP == level) /* SOL_UDP */
 	{
 		switch (option)
 		{
@@ -1518,7 +1232,7 @@ static int option_to_handler(const int level, const int option)
 				return SOCKOPT_BOOLEAN;
 		}
 	}
-	else if (IPPROTO_IP == level) /* IPPROTO_IP == SOL_IP */
+	else if (IPPROTO_IP == level) /* SOL_IP */
 	{
 		switch (option)
 		{
@@ -1551,7 +1265,7 @@ static int option_to_handler(const int level, const int option)
 				return SOCKOPT_INADDR;
 		}
 	}
-	else if (IPPROTO_IPV6 == level) /* IPPROTO_IPV6 == SOL_IPV6 */
+	else if (IPPROTO_IPV6 == level) /* SOL_IPV6 */
 	{
 		switch (option)
 		{
@@ -1584,12 +1298,7 @@ static int option_to_handler(const int level, const int option)
 	return -1;
 }
 
-/* }}} */
-
-/* {{{ sockopt() */
-
-static int
-sockopt(lua_State * L)
+static int sockopt(lua_State * L)
 {
 	int level, option, get;
 
@@ -1622,12 +1331,7 @@ sockopt(lua_State * L)
 	return 2;
 }
 
-/* }}} */
-
-/* {{{ lsock_getsockopt() */
-
-static int
-lsock_api_getsockopt(lua_State * L)
+static int api_getsockopt(lua_State * L)
 {
 	int n = lua_gettop(L);
 
@@ -1637,24 +1341,14 @@ lsock_api_getsockopt(lua_State * L)
 	return sockopt(L);
 }
 
-/* }}} */
-
-/* {{{ lsock_setsockopt() */
-
-static int
-lsock_api_setsockopt(lua_State * L)
+static int api_setsockopt(lua_State * L)
 {
 	luaL_checkany(L, 4);
 
 	return sockopt(L);
 }
 
-/* }}} */
-
-/* {{{ lsock_getaddrinfo() */
-
-static int
-lsock_api_getaddrinfo(lua_State * L)
+static int api_getaddrinfo(lua_State * L)
 {
 	int ret;
 	int i = 1;
@@ -1665,11 +1359,11 @@ lsock_api_getaddrinfo(lua_State * L)
 	const char * nname = lua_isnil(L, 1) ? NULL : luaL_checkstring(L, 1);
 	const char * sname = lua_isnil(L, 2) ? NULL : luaL_checkstring(L, 2);
 
-	BZERO(&hints, sizeof(struct addrinfo));
+	ZERO_OUT(&hints, sizeof(struct addrinfo));
 
 	if (!lua_isnone(L, 3))
 	{
-		luaL_checktype(L, 3, LUA_TTABLE); /* getaddrinfo('www.google.com', 'http', { ... }) */
+		luaL_checktype(L, 3, LUA_TTABLE); /* getaddrinfo('www.google.com', 'http', { options }) */
 
 		lua_getfield(L, 3, "ai_flags");
 
@@ -1745,12 +1439,7 @@ lsock_api_getaddrinfo(lua_State * L)
 	return ret;
 }
 
-/* }}} */
-
-/* {{{ lsock_getnameinfo() */
-
-static int
-lsock_api_getnameinfo(lua_State * L)
+static int api_getnameinfo(lua_State * L)
 {
 	int stat;
 
@@ -1760,8 +1449,8 @@ lsock_api_getnameinfo(lua_State * L)
 	const char * sa    = luaL_checklstring(L, 1, &sz);
 	int          flags = luaL_checkint(L, 2);
 
-	BZERO(hbuf, NI_MAXHOST);
-	BZERO(sbuf, NI_MAXSERV);
+	ZERO_OUT(hbuf, NI_MAXHOST);
+	ZERO_OUT(sbuf, NI_MAXSERV);
 
 	stat = getnameinfo((struct sockaddr *) sa, sz, hbuf, sizeof(hbuf), sbuf, sizeof(sbuf), flags);
 
@@ -1774,14 +1463,9 @@ lsock_api_getnameinfo(lua_State * L)
 	return 2;
 }
 
-/* }}} */
-
-/* {{{ lsock_select() */
-
 enum { R, W, E };
 
-static int
-lsock_api_select(lua_State * L)
+static int api_select(lua_State * L)
 {
 	int x, y, stat;
 
@@ -1799,7 +1483,7 @@ lsock_api_select(lua_State * L)
 		t = table_to_timeval(L, 4);
 	}
 
-	BZERO(&set, sizeof(set));
+	ZERO_OUT(&set, sizeof(set));
 
 	/* parse tables into fd_sets */
 	for (x = 1; x <= 3; x++)
@@ -1815,7 +1499,7 @@ lsock_api_select(lua_State * L)
 
 			fd = LSOCK_CHECKFD(L, -1);
 
-			highsock = LSOCK_MAX(highsock, fd);
+			highsock = MAX(highsock, fd);
 
 			FD_SET(fd, &set[x - 1]);
 		}
@@ -1860,22 +1544,17 @@ lsock_api_select(lua_State * L)
 	return 3;
 }
 
-/* {{{ lsock_ready_bytes() */
-
-/* note: can be used to get the bytes available
-** or as a boolean "ready for reading" check */
-static int
-lsock_api_ready_bytes(lua_State * L)
+static int api_unread_bytes(lua_State * L)
 {
 	lsocket s = LSOCK_CHECKSOCK(L, 1);
 
 	size_t available = 0;
 
 #ifdef _WIN32
-	if (LSOCK_OPERATION_FAILED(ioctlsocket(s, FIONREAD, (u_long *) &available)))
+	if (ioctlsocket(s, FIONREAD, (u_long *) &available))
 		return LSOCK_STRERROR(L, "ioctlsocket()");
 #else
-	if (LSOCK_OPERATION_FAILED(ioctl(s, FIONREAD, &available)))
+	if (ioctl(s, FIONREAD, &available))
 		return LSOCK_STRERROR(L, "ioctl()");
 #endif
 
@@ -1883,14 +1562,7 @@ lsock_api_ready_bytes(lua_State * L)
 	return 1;
 }
 
-/* }}} */
-
-/* }}} */
-
-/* {{{ lsock_pipe() */
-
-static int
-lsock_api_pipe(lua_State * L)
+static int api_pipe(lua_State * L)
 {
 	lsocket pair[2] = { -1, -1 };
 
@@ -1901,7 +1573,7 @@ lsock_api_pipe(lua_State * L)
 	if (0 == CreatePipe((PHANDLE) &pair[0], (PHANDLE) &pair[1], NULL, (DWORD) luaL_optnumber(L, 1, 0)))
 		return lsock_error(L, GetLastError(), (char * (*)(int)) &strerror, "CreatePipe()");
 #else
-	if (LSOCK_OPERATION_FAILED(pipe(pair)))
+	if (pipe(pair))
 		return LSOCK_STRERROR(L, NULL);
 #endif
 
@@ -1914,14 +1586,12 @@ lsock_api_pipe(lua_State * L)
 	return 2;
 }
 
-/* }}} */
 
 #ifndef _WIN32
-/* look into CreatePipe() */
-/* {{{ lsock_socketpair() */
 
-static int
-lsock_api_socketpair(lua_State * L)
+/* FIXME: Windows -> connect 2 TCP sockets on random (local) port */
+
+static int api_socketpair(lua_State * L)
 {
 	int pair[2] = { -1, -1 };
 
@@ -1932,7 +1602,7 @@ lsock_api_socketpair(lua_State * L)
 		type     = luaL_checknumber(L, 2),
 		protocol = luaL_checknumber(L, 3);
 
-	if (LSOCK_OPERATION_FAILED(socketpair(domain, type, protocol, pair)))
+	if (socketpair(domain, type, protocol, pair))
 		return LSOCK_STRERROR(L, NULL);
 
 	one = newfile(L);
@@ -1944,14 +1614,9 @@ lsock_api_socketpair(lua_State * L)
 	return 2;
 }
 
-/* }}} */
+/* FIXME: Windows -> TransmitFile() */
 
-/* {{{ lsock_sendfile() */
-
-/* look at using TransmitFile() on Windows */
-
-static int
-lsock_api_sendfile(lua_State * L)
+static int api_sendfile(lua_State * L)
 {
 	ssize_t sent;
 
@@ -1988,29 +1653,18 @@ lsock_api_sendfile(lua_State * L)
 	return 1;
 }
 
-/* }}} */
 #endif
 
-/* {{{ lsock_getfd() */
-
-/* for luasocket-dependant stuff */
-
-static int
-lsock_api_getfd(lua_State * L)
+static int api_getfd(lua_State * L)
 {
 	lua_pushnumber(L, LSOCK_CHECKFD(L, 1));
 
 	return 1;
 }
 
-/* }}} */
-
 #ifdef _WIN32
 
-/* {{{ lsock_cleanup() */
-
-static int
-lsock_cleanup(lua_State * L)
+static int lsock_cleanup(lua_State * L)
 {
 	((void) L);
 
@@ -2019,12 +1673,7 @@ lsock_cleanup(lua_State * L)
 	return 0;
 }
 
-/* }}} */
-
-/* {{{ lsock_startup() */
-
-static void
-lsock_startup(lua_State * L)
+static void lsock_startup(lua_State * L)
 {
 	WSADATA wsaData;
 
@@ -2043,60 +1692,55 @@ lsock_startup(lua_State * L)
 	}
 }
 
-/* }}} */
-
 #endif
-
-/* {{{ luaopen_lsock() */
-
-#define LUA_REG(x) { #x, lsock_api_##x }
 
 static luaL_Reg lsocklib[] =
 {
+#define REGISTER(x) { #x, api_##x }
+
 	/* the portable API */
-	LUA_REG(accept),
-	LUA_REG(bind),
-	LUA_REG(ready_bytes),
-	LUA_REG(shouldblock),
-	LUA_REG(close),
-	LUA_REG(connect),
-	LUA_REG(gai_strerror),
-	LUA_REG(getaddrinfo),
-	LUA_REG(getfd),
-	LUA_REG(getpeername),
-	LUA_REG(getnameinfo),
-	LUA_REG(getsockname),
-	LUA_REG(getsockopt),
-	LUA_REG(htons),
-	LUA_REG(ntohs),
-	LUA_REG(htonl),
-	LUA_REG(ntohl),
-	LUA_REG(listen),
-	LUA_REG(pack_sockaddr),
-	LUA_REG(pipe),
-	LUA_REG(recv),
-	LUA_REG(recvfrom),
-	LUA_REG(select),
-	LUA_REG(send),
-	LUA_REG(sendto),
-	LUA_REG(setsockopt),
-	LUA_REG(shutdown),
-	LUA_REG(socket),
-	LUA_REG(strerror),
-	LUA_REG(unpack_sockaddr),
+	REGISTER(accept),
+	REGISTER(bind),
+	REGISTER(should_block),
+	REGISTER(close),
+	REGISTER(connect),
+	REGISTER(gai_strerror),
+	REGISTER(getaddrinfo),
+	REGISTER(getfd),
+	REGISTER(getpeername),
+	REGISTER(getnameinfo),
+	REGISTER(getsockname),
+	REGISTER(getsockopt),
+	REGISTER(htons),
+	REGISTER(ntohs),
+	REGISTER(htonl),
+	REGISTER(ntohl),
+	REGISTER(listen),
+	REGISTER(pack_sockaddr),
+	REGISTER(pipe),
+	REGISTER(recv),
+	REGISTER(recvfrom),
+	REGISTER(select),
+	REGISTER(send),
+	REGISTER(sendto),
+	REGISTER(setsockopt),
+	REGISTER(shutdown),
+	REGISTER(socket),
+	REGISTER(strerror),
+	REGISTER(unpack_sockaddr),
+	REGISTER(unread_bytes),
 
 	/* Linux + Mac-specific API */
 #ifndef _WIN32
-	LUA_REG(sendfile),
-	LUA_REG(socketpair),
+	REGISTER(sendfile),
+	REGISTER(socketpair),
 #endif
 	{ NULL, NULL }
+
+#undef REGISTER
 };
 
-#undef LUA_REG
-
-LSOCK_EXPORT int
-luaopen_lsock(lua_State * L)
+EXPOSE_SYMBOL int luaopen_lsock(lua_State * L)
 {
 #ifdef _WIN32
 	lsock_startup(L);
@@ -2104,241 +1748,239 @@ luaopen_lsock(lua_State * L)
 
 	luaL_newlib(L, lsocklib);
 
-#define PUSH_CONST(C) \
-    lua_pushinteger(L, C);  \
-    lua_setfield(L, -2, #C)
-
 	lua_newtable(L);
 
+#define CONSTANT(C) PUSHFIELD(L, -1, integer, #C, C)
+
 	/* portable constants (alphabetical) */
-	PUSH_CONST(AF_APPLETALK);
-	PUSH_CONST(AF_INET);
-	PUSH_CONST(AF_INET6);
-	PUSH_CONST(AF_IPX);
-	PUSH_CONST(AF_UNSPEC);
-	PUSH_CONST(AI_ADDRCONFIG);
-	PUSH_CONST(AI_ALL);
-	PUSH_CONST(AI_CANONNAME);
-	PUSH_CONST(AI_NUMERICHOST);
-	PUSH_CONST(AI_NUMERICSERV);
-	PUSH_CONST(AI_PASSIVE);
-	PUSH_CONST(AI_V4MAPPED);
-	PUSH_CONST(EACCES);
-	PUSH_CONST(EADDRINUSE);
-	PUSH_CONST(EADDRNOTAVAIL);
-	PUSH_CONST(EAFNOSUPPORT);
-	PUSH_CONST(EAGAIN);
-	PUSH_CONST(EAI_AGAIN);
-	PUSH_CONST(EAI_BADFLAGS);
-	PUSH_CONST(EAI_FAIL);
-	PUSH_CONST(EAI_FAMILY);
-	PUSH_CONST(EAI_MEMORY);
-	PUSH_CONST(EAI_NODATA);
-	PUSH_CONST(EAI_NONAME);
-	PUSH_CONST(EAI_SERVICE);
-	PUSH_CONST(EAI_SOCKTYPE);
-	PUSH_CONST(EBADF);
-	PUSH_CONST(ECONNABORTED);
-	PUSH_CONST(EDESTADDRREQ);
-	PUSH_CONST(EINTR);
-	PUSH_CONST(EINVAL);
-	PUSH_CONST(EIO);
-	PUSH_CONST(EISDIR);
-	PUSH_CONST(ELOOP);
-	PUSH_CONST(EMFILE);
-	PUSH_CONST(ENAMETOOLONG);
-	PUSH_CONST(ENFILE);
-	PUSH_CONST(ENOBUFS);
-	PUSH_CONST(ENOENT);
-	PUSH_CONST(ENOMEM);
-	PUSH_CONST(ENOTCONN);
-	PUSH_CONST(ENOTDIR);
-	PUSH_CONST(ENOTSOCK);
-	PUSH_CONST(EOPNOTSUPP);
-	PUSH_CONST(EPROTO);
-	PUSH_CONST(EPROTONOSUPPORT);
-	PUSH_CONST(EPROTOTYPE);
-	PUSH_CONST(EROFS);
-	PUSH_CONST(EWOULDBLOCK);
-	PUSH_CONST(IPPROTO_AH);
-	PUSH_CONST(IPPROTO_EGP);
-	PUSH_CONST(IPPROTO_ESP);
-	PUSH_CONST(IPPROTO_FRAGMENT);
-	PUSH_CONST(IPPROTO_ICMP);
-	PUSH_CONST(IPPROTO_ICMPV6);
-	PUSH_CONST(IPPROTO_IDP);
-	PUSH_CONST(IPPROTO_IGMP);
-	PUSH_CONST(IPPROTO_IP);
-	PUSH_CONST(IPPROTO_IPV6);
-	PUSH_CONST(IPPROTO_MAX);
-	PUSH_CONST(IPPROTO_NONE);
-	PUSH_CONST(IPPROTO_PIM);
-	PUSH_CONST(IPPROTO_PUP);
-	PUSH_CONST(IPPROTO_RAW);
-	PUSH_CONST(IPPROTO_ROUTING);
-	PUSH_CONST(IPPROTO_SCTP);
-	PUSH_CONST(IPPROTO_TCP);
-	PUSH_CONST(IPPROTO_UDP);
-	PUSH_CONST(IPV6_CHECKSUM);
-	PUSH_CONST(IPV6_HOPLIMIT);
-	PUSH_CONST(IPV6_JOIN_GROUP);
-	PUSH_CONST(IPV6_LEAVE_GROUP);
-	PUSH_CONST(IPV6_MULTICAST_HOPS);
-	PUSH_CONST(IPV6_MULTICAST_IF);
-	PUSH_CONST(IPV6_MULTICAST_LOOP);
-	PUSH_CONST(IPV6_PKTINFO);
-	PUSH_CONST(IPV6_UNICAST_HOPS);
-	PUSH_CONST(IPV6_V6ONLY);
-	PUSH_CONST(IP_ADD_MEMBERSHIP);
-	PUSH_CONST(IP_ADD_SOURCE_MEMBERSHIP);
-	PUSH_CONST(IP_BLOCK_SOURCE);
-	PUSH_CONST(IP_DROP_MEMBERSHIP);
-	PUSH_CONST(IP_DROP_SOURCE_MEMBERSHIP);
-	PUSH_CONST(IP_HDRINCL);
-	PUSH_CONST(IP_MULTICAST_IF);
-	PUSH_CONST(IP_MULTICAST_LOOP);
-	PUSH_CONST(IP_MULTICAST_TTL);
-	PUSH_CONST(IP_OPTIONS);
-	PUSH_CONST(IP_PKTINFO);
-	PUSH_CONST(IP_TOS);
-	PUSH_CONST(IP_TTL);
-	PUSH_CONST(IP_UNBLOCK_SOURCE);
-	PUSH_CONST(MSG_CTRUNC);
-	PUSH_CONST(MSG_DONTROUTE);
-	PUSH_CONST(MSG_OOB);
-	PUSH_CONST(MSG_PEEK);
-	PUSH_CONST(MSG_TRUNC);
-	PUSH_CONST(MSG_WAITALL);
-	PUSH_CONST(NI_DGRAM);
-	PUSH_CONST(NI_NAMEREQD);
-	PUSH_CONST(NI_NOFQDN);
-	PUSH_CONST(NI_NUMERICHOST);
-	PUSH_CONST(NI_NUMERICSERV);
-	PUSH_CONST(PF_APPLETALK);
-	PUSH_CONST(PF_INET);
-	PUSH_CONST(PF_INET6);
-	PUSH_CONST(PF_IPX);
-	PUSH_CONST(PF_UNSPEC);
-	PUSH_CONST(SOCK_DGRAM);
-	PUSH_CONST(SOCK_RAW);
-	PUSH_CONST(SOCK_RDM);
-	PUSH_CONST(SOCK_SEQPACKET);
-	PUSH_CONST(SOCK_STREAM);
-	PUSH_CONST(SOL_SOCKET);
-	PUSH_CONST(SOMAXCONN);
-	PUSH_CONST(SO_ACCEPTCONN);
-	PUSH_CONST(SO_BROADCAST);
-	PUSH_CONST(SO_DEBUG);
-	PUSH_CONST(SO_DONTROUTE);
-	PUSH_CONST(SO_ERROR);
-	PUSH_CONST(SO_KEEPALIVE);
-	PUSH_CONST(SO_LINGER);
-	PUSH_CONST(SO_OOBINLINE);
-	PUSH_CONST(SO_RCVBUF);
-	PUSH_CONST(SO_RCVLOWAT);
-	PUSH_CONST(SO_RCVTIMEO);
-	PUSH_CONST(SO_REUSEADDR);
-	PUSH_CONST(SO_SNDBUF);
-	PUSH_CONST(SO_SNDLOWAT);
-	PUSH_CONST(SO_SNDTIMEO);
-	PUSH_CONST(SO_TYPE);
-	PUSH_CONST(TCP_MAXSEG);
-	PUSH_CONST(TCP_NODELAY);
+	CONSTANT(AF_APPLETALK);
+	CONSTANT(AF_INET);
+	CONSTANT(AF_INET6);
+	CONSTANT(AF_IPX);
+	CONSTANT(AF_UNSPEC);
+	CONSTANT(AI_ADDRCONFIG);
+	CONSTANT(AI_ALL);
+	CONSTANT(AI_CANONNAME);
+	CONSTANT(AI_NUMERICHOST);
+	CONSTANT(AI_NUMERICSERV);
+	CONSTANT(AI_PASSIVE);
+	CONSTANT(AI_V4MAPPED);
+	CONSTANT(EACCES);
+	CONSTANT(EADDRINUSE);
+	CONSTANT(EADDRNOTAVAIL);
+	CONSTANT(EAFNOSUPPORT);
+	CONSTANT(EAGAIN);
+	CONSTANT(EAI_AGAIN);
+	CONSTANT(EAI_BADFLAGS);
+	CONSTANT(EAI_FAIL);
+	CONSTANT(EAI_FAMILY);
+	CONSTANT(EAI_MEMORY);
+	CONSTANT(EAI_NODATA);
+	CONSTANT(EAI_NONAME);
+	CONSTANT(EAI_SERVICE);
+	CONSTANT(EAI_SOCKTYPE);
+	CONSTANT(EBADF);
+	CONSTANT(ECONNABORTED);
+	CONSTANT(EDESTADDRREQ);
+	CONSTANT(EINTR);
+	CONSTANT(EINVAL);
+	CONSTANT(EIO);
+	CONSTANT(EISDIR);
+	CONSTANT(ELOOP);
+	CONSTANT(EMFILE);
+	CONSTANT(ENAMETOOLONG);
+	CONSTANT(ENFILE);
+	CONSTANT(ENOBUFS);
+	CONSTANT(ENOENT);
+	CONSTANT(ENOMEM);
+	CONSTANT(ENOTCONN);
+	CONSTANT(ENOTDIR);
+	CONSTANT(ENOTSOCK);
+	CONSTANT(EOPNOTSUPP);
+	CONSTANT(EPROTO);
+	CONSTANT(EPROTONOSUPPORT);
+	CONSTANT(EPROTOTYPE);
+	CONSTANT(EROFS);
+	CONSTANT(EWOULDBLOCK);
+	CONSTANT(IPPROTO_AH);
+	CONSTANT(IPPROTO_EGP);
+	CONSTANT(IPPROTO_ESP);
+	CONSTANT(IPPROTO_FRAGMENT);
+	CONSTANT(IPPROTO_ICMP);
+	CONSTANT(IPPROTO_ICMPV6);
+	CONSTANT(IPPROTO_IDP);
+	CONSTANT(IPPROTO_IGMP);
+	CONSTANT(IPPROTO_IP);
+	CONSTANT(IPPROTO_IPV6);
+	CONSTANT(IPPROTO_MAX);
+	CONSTANT(IPPROTO_NONE);
+	CONSTANT(IPPROTO_PIM);
+	CONSTANT(IPPROTO_PUP);
+	CONSTANT(IPPROTO_RAW);
+	CONSTANT(IPPROTO_ROUTING);
+	CONSTANT(IPPROTO_SCTP);
+	CONSTANT(IPPROTO_TCP);
+	CONSTANT(IPPROTO_UDP);
+	CONSTANT(IPV6_CHECKSUM);
+	CONSTANT(IPV6_HOPLIMIT);
+	CONSTANT(IPV6_JOIN_GROUP);
+	CONSTANT(IPV6_LEAVE_GROUP);
+	CONSTANT(IPV6_MULTICAST_HOPS);
+	CONSTANT(IPV6_MULTICAST_IF);
+	CONSTANT(IPV6_MULTICAST_LOOP);
+	CONSTANT(IPV6_PKTINFO);
+	CONSTANT(IPV6_UNICAST_HOPS);
+	CONSTANT(IPV6_V6ONLY);
+	CONSTANT(IP_ADD_MEMBERSHIP);
+	CONSTANT(IP_ADD_SOURCE_MEMBERSHIP);
+	CONSTANT(IP_BLOCK_SOURCE);
+	CONSTANT(IP_DROP_MEMBERSHIP);
+	CONSTANT(IP_DROP_SOURCE_MEMBERSHIP);
+	CONSTANT(IP_HDRINCL);
+	CONSTANT(IP_MULTICAST_IF);
+	CONSTANT(IP_MULTICAST_LOOP);
+	CONSTANT(IP_MULTICAST_TTL);
+	CONSTANT(IP_OPTIONS);
+	CONSTANT(IP_PKTINFO);
+	CONSTANT(IP_TOS);
+	CONSTANT(IP_TTL);
+	CONSTANT(IP_UNBLOCK_SOURCE);
+	CONSTANT(MSG_CTRUNC);
+	CONSTANT(MSG_DONTROUTE);
+	CONSTANT(MSG_OOB);
+	CONSTANT(MSG_PEEK);
+	CONSTANT(MSG_TRUNC);
+	CONSTANT(MSG_WAITALL);
+	CONSTANT(NI_DGRAM);
+	CONSTANT(NI_NAMEREQD);
+	CONSTANT(NI_NOFQDN);
+	CONSTANT(NI_NUMERICHOST);
+	CONSTANT(NI_NUMERICSERV);
+	CONSTANT(PF_APPLETALK);
+	CONSTANT(PF_INET);
+	CONSTANT(PF_INET6);
+	CONSTANT(PF_IPX);
+	CONSTANT(PF_UNSPEC);
+	CONSTANT(SOCK_DGRAM);
+	CONSTANT(SOCK_RAW);
+	CONSTANT(SOCK_RDM);
+	CONSTANT(SOCK_SEQPACKET);
+	CONSTANT(SOCK_STREAM);
+	CONSTANT(SOL_SOCKET);
+	CONSTANT(SOMAXCONN);
+	CONSTANT(SO_ACCEPTCONN);
+	CONSTANT(SO_BROADCAST);
+	CONSTANT(SO_DEBUG);
+	CONSTANT(SO_DONTROUTE);
+	CONSTANT(SO_ERROR);
+	CONSTANT(SO_KEEPALIVE);
+	CONSTANT(SO_LINGER);
+	CONSTANT(SO_OOBINLINE);
+	CONSTANT(SO_RCVBUF);
+	CONSTANT(SO_RCVLOWAT);
+	CONSTANT(SO_RCVTIMEO);
+	CONSTANT(SO_REUSEADDR);
+	CONSTANT(SO_SNDBUF);
+	CONSTANT(SO_SNDLOWAT);
+	CONSTANT(SO_SNDTIMEO);
+	CONSTANT(SO_TYPE);
+	CONSTANT(TCP_MAXSEG);
+	CONSTANT(TCP_NODELAY);
 
-/* Windows-only constants */
+/* Windows-only */
 #ifdef _WIN32
-	PUSH_CONST(SD_BOTH);
-	PUSH_CONST(SD_RECEIVE);
-	PUSH_CONST(SD_SEND);
-	PUSH_CONST(UDP_CHECKSUM_COVERAGE);
-	PUSH_CONST(UDP_NOCHECKSUM);
+	CONSTANT(SD_BOTH);
+	CONSTANT(SD_RECEIVE);
+	CONSTANT(SD_SEND);
+	CONSTANT(UDP_CHECKSUM_COVERAGE);
+	CONSTANT(UDP_NOCHECKSUM);
 #endif
 
-/* Linux-only constants */
+/* Linux-only */
 #ifdef __linux
-	PUSH_CONST(AF_IRDA);
-	PUSH_CONST(AI_CANONIDN);
-	PUSH_CONST(AI_IDN);
-	PUSH_CONST(AI_IDN_ALLOW_UNASSIGNED);
-	PUSH_CONST(AI_IDN_USE_STD3_ASCII_RULES);
-	PUSH_CONST(IPPROTO_COMP);
-	PUSH_CONST(IPPROTO_DCCP);
-	PUSH_CONST(IPPROTO_DSTOPTS);
-	PUSH_CONST(IPPROTO_HOPOPTS);
-	PUSH_CONST(IPPROTO_UDPLITE);
-	PUSH_CONST(IPV6_ADDRFORM);
-	PUSH_CONST(IPV6_AUTHHDR);
-	PUSH_CONST(IPV6_DSTOPTS);
-	PUSH_CONST(IPV6_HOPOPTS);
-	PUSH_CONST(IPV6_NEXTHOP);
-	PUSH_CONST(IPV6_ROUTER_ALERT);
-	PUSH_CONST(IP_MTU_DISCOVER);
-	PUSH_CONST(IP_RECVERR);
-	PUSH_CONST(IP_RECVTOS);
-	PUSH_CONST(IP_ROUTER_ALERT);
-	PUSH_CONST(MSG_CONFIRM);
-	PUSH_CONST(MSG_ERRQUEUE);
-	PUSH_CONST(MSG_FASTOPEN);
-	PUSH_CONST(MSG_FIN);
-	PUSH_CONST(MSG_MORE);
-	PUSH_CONST(MSG_NOSIGNAL);
-	PUSH_CONST(MSG_PROXY);
-	PUSH_CONST(MSG_RST);
-	PUSH_CONST(MSG_SYN);
-	PUSH_CONST(MSG_TRYHARD);
-	PUSH_CONST(MSG_WAITFORONE);
-	PUSH_CONST(NI_IDN);
-	PUSH_CONST(NI_IDN_ALLOW_UNASSIGNED);
-	PUSH_CONST(NI_IDN_USE_STD3_ASCII_RULES);
-	PUSH_CONST(PF_IRDA);
-	PUSH_CONST(SOL_IP);
-	PUSH_CONST(SOL_IPV6);
-	PUSH_CONST(SOL_TCP);
-	PUSH_CONST(SOL_UDP);
-	PUSH_CONST(SO_BINDTODEVICE);
-	PUSH_CONST(SO_BSDCOMPAT);
-	PUSH_CONST(SO_DOMAIN);
-	PUSH_CONST(SO_MARK);
-	PUSH_CONST(SO_NO_CHECK);
-	PUSH_CONST(SO_PEEK_OFF);
-	PUSH_CONST(SO_PRIORITY);
-	PUSH_CONST(SO_PROTOCOL);
-	PUSH_CONST(SO_RCVBUFFORCE);
-	PUSH_CONST(SO_SNDBUFFORCE);
-	PUSH_CONST(TCP_CORK);
-	PUSH_CONST(TCP_DEFER_ACCEPT);
-	PUSH_CONST(TCP_KEEPIDLE);
-	PUSH_CONST(TCP_LINGER2);
-	PUSH_CONST(TCP_SYNCNT);
-	PUSH_CONST(TCP_WINDOW_CLAMP);
-	PUSH_CONST(UDP_CORK);
+	CONSTANT(AF_IRDA);
+	CONSTANT(AI_CANONIDN);
+	CONSTANT(AI_IDN);
+	CONSTANT(AI_IDN_ALLOW_UNASSIGNED);
+	CONSTANT(AI_IDN_USE_STD3_ASCII_RULES);
+	CONSTANT(IPPROTO_COMP);
+	CONSTANT(IPPROTO_DCCP);
+	CONSTANT(IPPROTO_DSTOPTS);
+	CONSTANT(IPPROTO_HOPOPTS);
+	CONSTANT(IPPROTO_UDPLITE);
+	CONSTANT(IPV6_ADDRFORM);
+	CONSTANT(IPV6_AUTHHDR);
+	CONSTANT(IPV6_DSTOPTS);
+	CONSTANT(IPV6_HOPOPTS);
+	CONSTANT(IPV6_NEXTHOP);
+	CONSTANT(IPV6_ROUTER_ALERT);
+	CONSTANT(IP_MTU_DISCOVER);
+	CONSTANT(IP_RECVERR);
+	CONSTANT(IP_RECVTOS);
+	CONSTANT(IP_ROUTER_ALERT);
+	CONSTANT(MSG_CONFIRM);
+	CONSTANT(MSG_ERRQUEUE);
+	CONSTANT(MSG_FASTOPEN);
+	CONSTANT(MSG_FIN);
+	CONSTANT(MSG_MORE);
+	CONSTANT(MSG_NOSIGNAL);
+	CONSTANT(MSG_PROXY);
+	CONSTANT(MSG_RST);
+	CONSTANT(MSG_SYN);
+	CONSTANT(MSG_TRYHARD);
+	CONSTANT(MSG_WAITFORONE);
+	CONSTANT(NI_IDN);
+	CONSTANT(NI_IDN_ALLOW_UNASSIGNED);
+	CONSTANT(NI_IDN_USE_STD3_ASCII_RULES);
+	CONSTANT(PF_IRDA);
+	CONSTANT(SOL_IP);
+	CONSTANT(SOL_IPV6);
+	CONSTANT(SOL_TCP);
+	CONSTANT(SOL_UDP);
+	CONSTANT(SO_BINDTODEVICE);
+	CONSTANT(SO_BSDCOMPAT);
+	CONSTANT(SO_DOMAIN);
+	CONSTANT(SO_MARK);
+	CONSTANT(SO_NO_CHECK);
+	CONSTANT(SO_PEEK_OFF);
+	CONSTANT(SO_PRIORITY);
+	CONSTANT(SO_PROTOCOL);
+	CONSTANT(SO_RCVBUFFORCE);
+	CONSTANT(SO_SNDBUFFORCE);
+	CONSTANT(TCP_CORK);
+	CONSTANT(TCP_DEFER_ACCEPT);
+	CONSTANT(TCP_KEEPIDLE);
+	CONSTANT(TCP_LINGER2);
+	CONSTANT(TCP_SYNCNT);
+	CONSTANT(TCP_WINDOW_CLAMP);
+	CONSTANT(UDP_CORK);
 #endif
 
-/* Linux + Mac shared constants */
+/* Linux + Mac shared */
 #ifndef _WIN32
-	PUSH_CONST(EAI_ADDRFAMILY);
-	PUSH_CONST(EAI_OVERFLOW);
-	PUSH_CONST(EAI_SYSTEM);
-	PUSH_CONST(IPPROTO_ENCAP);
-	PUSH_CONST(IPPROTO_GRE);
-	PUSH_CONST(IPPROTO_IPIP);
-	PUSH_CONST(IPPROTO_MTP);
-	PUSH_CONST(IPPROTO_RSVP);
-	PUSH_CONST(IPPROTO_TP);
-	PUSH_CONST(IP_RECVOPTS);
-	PUSH_CONST(IP_RETOPTS);
-	PUSH_CONST(MSG_DONTWAIT);
-	PUSH_CONST(MSG_EOR);
-	PUSH_CONST(PF_LOCAL);
-	PUSH_CONST(SHUT_RD);
-	PUSH_CONST(SHUT_RDWR);
-	PUSH_CONST(SHUT_WR);
-	PUSH_CONST(SO_TIMESTAMP);
-	PUSH_CONST(TCP_KEEPCNT);
-	PUSH_CONST(TCP_KEEPINTVL);
+	CONSTANT(EAI_ADDRFAMILY);
+	CONSTANT(EAI_OVERFLOW);
+	CONSTANT(EAI_SYSTEM);
+	CONSTANT(IPPROTO_ENCAP);
+	CONSTANT(IPPROTO_GRE);
+	CONSTANT(IPPROTO_IPIP);
+	CONSTANT(IPPROTO_MTP);
+	CONSTANT(IPPROTO_RSVP);
+	CONSTANT(IPPROTO_TP);
+	CONSTANT(IP_RECVOPTS);
+	CONSTANT(IP_RETOPTS);
+	CONSTANT(MSG_DONTWAIT);
+	CONSTANT(MSG_EOR);
+	CONSTANT(PF_LOCAL);
+	CONSTANT(SHUT_RD);
+	CONSTANT(SHUT_RDWR);
+	CONSTANT(SHUT_WR);
+	CONSTANT(SO_TIMESTAMP);
+	CONSTANT(TCP_KEEPCNT);
+	CONSTANT(TCP_KEEPINTVL);
 #endif
 
-#undef PUSH_CONST
+#undef CONSTANT
 
 	PUSHFIELD(L, -1, literal, "INADDR_ANY",             "0.0.0.0"        );
 	PUSHFIELD(L, -1, literal, "INADDR_BROADCAST",       "255.255.255.255");
@@ -2381,4 +2023,3 @@ luaopen_lsock(lua_State * L)
 	return 1;
 }
 
-/* }}} */
